@@ -6,8 +6,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 from dotenv import load_dotenv
 import streamlit as st
-
-
+from pillow_heif import register_heif_opener
+register_heif_opener()
 
 
 
@@ -40,10 +40,6 @@ def get_engine():
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
     return engine
-
-# ---------------------------------------------------------
-# 1) 초기 스키마 생성 (users 테이블)
-# ---------------------------------------------------------
 
 
 # ---------------------------------------------------------
