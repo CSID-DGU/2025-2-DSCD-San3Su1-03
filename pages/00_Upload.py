@@ -4,7 +4,13 @@ import streamlit as st
 from PIL import Image, ExifTags
 from io import BytesIO
 from datetime import datetime
-from dotenv import load_dotenv
+
+# ✅ .env를 최우선으로 로드 (상위 경로까지 탐색)
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv(), override=True)
+
+from core.geocode import kakao_reverse
+from core.db import get_address_cache_by_coord, upsert_address_cache
 
 # ---------- 0) 인증 가드 ----------
 auth = st.session_state.get("auth")
@@ -26,7 +32,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from core.storage import get_storage
 from core.db import insert_photo_record
 
-load_dotenv()
 
 st.title("Image Upload")
 
@@ -44,7 +49,43 @@ if hasattr(storage, "bucket"):
 imgs_id = st.number_input("IMGS ID (에피소드 번호)", min_value=1, step=1)
 files = st.file_uploader("사진 업로드", type=["jpg","jpeg","png","heic","heif"], accept_multiple_files=True)
 
-# ---------- 5) EXIF 헬퍼 ----------
+from PIL import ExifTags
+
+def _as_float(x):
+    """IFDRational / Fraction / tuple(num,den) / int / float 모두 안전 변환"""
+    try:
+        if isinstance(x, tuple) and len(x) == 2:
+            n, d = x
+            return float(n) / float(d) if d else None
+        return float(x)
+    except Exception:
+        return None
+
+def _norm_ref(v):
+    """b'N' 같은 bytes → 'N' 로 교정"""
+    if isinstance(v, (bytes, bytearray)):
+        try:
+            return v.decode(errors="ignore")
+        except Exception:
+            return str(v)
+    return v
+
+def _dms_to_deg(dms, ref):
+    """
+    dms: [deg, min, sec] 각 원소가 IFDRational/tuple/float 등 다양할 수 있음
+    ref: 'N','S','E','W' (bytes일 수도 있음)
+    """
+    try:
+        ref = _norm_ref(ref)
+        parts = [ _as_float(p) for p in dms ]
+        if any(p is None for p in parts):
+            return None
+        deg, minutes, seconds = parts[0], (parts[1] if len(parts) > 1 else 0.0), (parts[2] if len(parts) > 2 else 0.0)
+        sign = -1 if str(ref).upper() in ("S", "W") else 1
+        return sign * (deg + minutes/60.0 + seconds/3600.0)
+    except Exception:
+        return None
+
 def _get_exif(img: Image.Image):
     try:
         exif = img._getexif() or {}
@@ -52,48 +93,46 @@ def _get_exif(img: Image.Image):
     except Exception:
         return {}
 
-def _dms_to_deg(dms, ref):
-    # dms: ((deg_num, deg_den), (min_num, min_den), (sec_num, sec_den))
-    try:
-        deg = dms[0][0] / dms[0][1]
-        minutes = dms[1][0] / dms[1][1]
-        seconds = dms[2][0] / dms[2][1]
-        sign = -1 if ref in ["S", "W"] else 1
-        return sign * (deg + minutes/60 + seconds/3600)
-    except Exception:
-        return None
-
 def extract_gps_datetime(img: Image.Image):
     exif = _get_exif(img)
-    # 촬영시각
+
+    # ---- 촬영시각 ----
     taken_at = None
-    for key in ("DateTimeOriginal", "DateTime", "DateTimeDigitized"):
-        if exif.get(key):
-            raw = exif[key]
-            # "YYYY:MM:DD HH:MM:SS" 형태가 일반적
+    for key in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
+        raw = exif.get(key)
+        if not raw:
+            continue
+        for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
             try:
-                taken_at = datetime.strptime(raw, "%Y:%m:%d %H:%M:%S")
+                from datetime import datetime
+                taken_at = datetime.strptime(str(raw), fmt)
                 break
             except Exception:
-                # 다른 포맷이 들어오는 경우도 드물게 존재 → 실패 시 None 유지
                 pass
+        if taken_at:
+            break
 
-    # GPS
-    gps_info = exif.get("GPSInfo")
+    # ---- GPS ----
     lon = lat = None
+    gps_info = exif.get("GPSInfo")
     if isinstance(gps_info, dict):
-        # 키가 숫자일 수도 있어 가드
-        gps = {}
-        for k, v in gps_info.items():
-            tag = ExifTags.GPSTAGS.get(k, k)
-            gps[tag] = v
+        gps = { ExifTags.GPSTAGS.get(k, k): v for k, v in gps_info.items() }
 
-        if "GPSLatitude" in gps and "GPSLatitudeRef" in gps \
-           and "GPSLongitude" in gps and "GPSLongitudeRef" in gps:
-            lat = _dms_to_deg(gps["GPSLatitude"], gps["GPSLatitudeRef"])
-            lon = _dms_to_deg(gps["GPSLongitude"], gps["GPSLongitudeRef"])
+        # (A) 십진수로 바로 들어있는 경우
+        if isinstance(gps.get("GPSLatitude"), (int, float)) and isinstance(gps.get("GPSLongitude"), (int, float)):
+            lat = float(gps["GPSLatitude"])
+            lon = float(gps["GPSLongitude"])
+            return lon, lat, taken_at
+
+        # (B) DMS + Ref 표준 케이스
+        lat_ref = _norm_ref(gps.get("GPSLatitudeRef"))
+        lon_ref = _norm_ref(gps.get("GPSLongitudeRef"))
+        if gps.get("GPSLatitude") is not None and gps.get("GPSLongitude") is not None and lat_ref and lon_ref:
+            lat = _dms_to_deg(gps["GPSLatitude"], lat_ref)
+            lon = _dms_to_deg(gps["GPSLongitude"], lon_ref)
 
     return lon, lat, taken_at
+
 
 # ---------- 6) 업로드 처리 ----------
 if files and imgs_id:
@@ -111,6 +150,8 @@ if files and imgs_id:
             # 2) 원본(변환 전) 이미지로 EXIF 먼저 추출
             img_raw = Image.open(BytesIO(file_bytes))
             lon, lat, taken_at = extract_gps_datetime(img_raw)  # ✅ EXIF 있는 상태에서 추출
+            st.write("GPS RAW:", {ExifTags.GPSTAGS.get(k,k):v for k,v in (_get_exif(img_raw).get("GPSInfo") or {}).items()})
+
 
             # a) 이미지 로딩
             img = Image.open(file).convert("RGB")
@@ -138,6 +179,24 @@ if files and imgs_id:
                 size=size,
                 taken_at=taken_at, lon=lon, lat=lat
             )
+            # ✅ 역지오코딩 캐시 저장 (좌표가 있을 때만)
+            if lat is not None and lon is not None:
+                try:
+                    # 1) 좌표 캐시 먼저 확인 (라운드6+provider)
+                    cached = get_address_cache_by_coord(lat, lon, provider="kakao")
+                    if cached and cached.get("data"):
+                        # 좌표 단위 캐시를 photo_id에도 연결
+                        upsert_address_cache(photo_id, lat, lon, "kakao", cached["data"])
+                    else:
+                        # 2) 카카오 API 호출
+                        info = kakao_reverse(lat, lon)
+                        if info:
+                            upsert_address_cache(photo_id, lat, lon, info.get("provider","kakao"), info)
+                            st.caption(f"주소 캐시 저장: {info.get('address_name') or info.get('road_address')}")
+                        else:
+                            st.caption("주소 조회 실패(카카오 응답 없음)")
+                except Exception as ge:
+                    st.warning(f"주소 캐시 중 오류: {ge!r}")
 
             # g) 세션용 메타도 누적
             meta_pack.append({
