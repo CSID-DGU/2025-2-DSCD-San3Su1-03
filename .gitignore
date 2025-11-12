@@ -16,6 +16,7 @@ Thumbs.db
 # IDE 설정 (PyCharm, VSCode 등)
 .vscode/
 .idea/
+.streamlit/
 
 # 보안
 .env
