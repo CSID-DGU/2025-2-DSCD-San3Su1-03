@@ -20,3 +20,4 @@ Thumbs.db
 
 # 보안
 .env
+config.py

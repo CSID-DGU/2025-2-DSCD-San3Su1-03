@@ -29,25 +29,37 @@ def load_labels_from_csv(path):
 # ------------------------------
 # 2. GPT 프롬프트
 # ------------------------------
-SYSTEM_PROMPT = """You are an expert travel photographer and content curator.
-Generate concise subcategories of travel spots suitable for photo labeling.
-Avoid people, menus, or indoor-only contexts.
-Focus on scenic, natural, or location-based variations that would look great in travel photos."""
+SYSTEM_PROMPT = """
+You are an expert travel photographer, location scout, and visual data curator.
+Your job is to generate high-quality English sublabels for place categories.
 
-USER_PROMPT_TEMPLATE = """Main place: {category}
+Guidelines:
+- Focus on visually distinct, photo-worthy variations of the location.
+- Prefer scenery, atmosphere, architecture, natural features, and vantage points.
+- Avoid: people, food, animals close-up, menus, shops, subjective emotions.
+- Avoid generic or repetitive descriptors.
+- Assume these labels will be used for CLIP-based machine learning image tagging.
+- Output should reflect visual styles found in global travel photography.
+"""
 
-Generate exactly 10 short English sublabels suitable for travel photo labeling.
+USER_PROMPT_TEMPLATE = """
+Main place category: {category}
+
+Generate exactly 10 short English sublabels.
+Purpose: image labeling for travel photography and CLIP-based visual tagging.
+
 Rules:
 - 3–8 words each
-- Describes photo-worthy variations *of or from* the main place
-- Avoid mentioning people, menus, or food
-- Should sound like something a traveler would capture in a photo
-Examples:
-- colorful lighthouse at sunset
-- sea view from lighthouse
-- misty lighthouse under cloudy sky
+- No numbering, no bullets
+- Each line must be a distinct photo-worthy variation *of or around* the place
+- Focus on scenery, atmosphere, structure, or vantage points
+- Avoid: people, food, stores, events, crowds, subjective adjectives
+- Avoid indoor-only contexts unless the main place is inherently indoors
+- Avoid vague labels like “beautiful view”
 
-Output: 10 separate lines, no numbering or bullets."""
+Output format:
+10 lines, each containing one sublabel only.
+"""
 
 def normalize_category(cat):
     return re.sub(r"\s+", " ", cat.replace("_", " ").replace("/", " ").strip())
@@ -93,7 +105,7 @@ def call_gpt(client, category):
 # 4. 메인 실행부
 # ------------------------------
 def main():
-    client = OpenAI(api_key="Open_API_Key")  # 환경 변수 사용 권장
+    client = OpenAI(api_key="")  # 환경 변수 사용 권장
     labels = load_labels_from_csv(LABEL_CSV)
     rows = []
 
