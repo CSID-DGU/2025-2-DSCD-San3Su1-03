@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 ENGINE_URL = "postgresql+psycopg2://postgres:dscd1234@dscd.czuosc4sm6fc.ap-northeast-2.rds.amazonaws.com:5432/life-recorder"
-CSV_PATH   = "./Code/Clip_label_1.csv"
+CSV_PATH   = "./Clip_label_1.csv"
 
 def clean(s):
     if pd.isna(s): return None
