@@ -20,3 +20,4 @@ open-clip-torch
 PIL
 torch
 torchvision
+transformers
