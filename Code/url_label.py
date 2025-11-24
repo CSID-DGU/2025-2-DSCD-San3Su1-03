@@ -13,228 +13,202 @@ from psycopg2.extras import execute_values
 # 0. 사용자 수정 구간
 # =========================================================
 DB_CONFIG = {
-    "host": "YOUR_HOST",
+    "host": "dscd.czuosc4sm6fc.ap-northeast-2.rds.amazonaws.com",
     "port": 5432,
-    "dbname": "YOUR_DBNAME",
-    "user": "YOUR_USER",
-    "password": "YOUR_PASSWORD",
+    "dbname": "life-recorder",
+    "user": "postgres",
+    "password": "dscd1234",
 }
 
-# place_id 범위는 실행 시 직접 입력받음
-# top_k 설정 (당신이 말한 그대로)
+# =========================================================
+# 1. 파라미터 설정
+# =========================================================
 TOPK_MAIN = 2
-TOPK_SUB  = 3
+TOPK_SUB = 3
 
-# cosine similarity 값을 퍼센트로 저장할지 여부
-# 예시(weight=91.22)처럼 쓰려면 True 권장
-SCALE_TO_PERCENT = True
-
-# 이미지 다운로드 타임아웃/재시도 옵션
+SCALE_TO_PERCENT = True       # True면 score*100 저장
 REQ_TIMEOUT = 10
 MAX_RETRY = 2
 
 # =========================================================
-# 1. OpenCLIP 모델 로드
+# 2. OpenCLIP 모델 로드
 # =========================================================
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai')
-tokenizer = open_clip.get_tokenizer('ViT-B-32')
+model, _, preprocess = open_clip.create_model_and_transforms(
+    'ViT-G-14',
+    pretrained='laion2b_s12b_b42k'
+)
+tokenizer = open_clip.get_tokenizer('ViT-G-14')
+
 model.to(device).eval()
 
 # =========================================================
-# 2. DB 연결
+# 3. DB 연결
 # =========================================================
 conn = psycopg2.connect(**DB_CONFIG)
-conn.autocommit = False  # 트랜잭션 수동 관리
+conn.autocommit = False
 cur = conn.cursor()
 
 # =========================================================
-# 3. label 테이블에서 main/sub 라벨 불러오기
-#    - main: level=1
-#    - sub : level=2, parent_id로 묶음
+# 4. label 테이블 읽기
 # =========================================================
 cur.execute("""
     SELECT label_id, name, level, parent_id
     FROM label
 """)
-label_rows = cur.fetchall()
+rows = cur.fetchall()
 
-main_labels = []              # [(label_id, name), ...]
-sub_labels_by_parent = {}     # parent_id -> [(label_id, name), ...]
+main_labels = []               # level=1
+sub_labels_by_parent = {}      # parent_id → sub list
 
-for label_id, name, level, parent_id in label_rows:
-    if level == 1:
-        main_labels.append((label_id, name))
-    elif level == 2 and parent_id is not None:
-        sub_labels_by_parent.setdefault(parent_id, []).append((label_id, name))
+for lid, name, lv, pid in rows:
+    if lv == 1:
+        main_labels.append((lid, name))
+    elif lv == 2 and pid is not None:
+        sub_labels_by_parent.setdefault(pid, []).append((lid, name))
 
 main_label_ids  = [x[0] for x in main_labels]
 main_label_text = [x[1] for x in main_labels]
 
-# main 라벨 텍스트 토큰은 미리 만들어두면 빨라짐
-main_text_tokens = tokenizer(main_label_text).to(device)
+# main label 텍스트는 미리 임베딩 해둔다
+main_tok = tokenizer(main_label_text).to(device)
 with torch.no_grad():
-    main_text_features = model.encode_text(main_text_tokens)
-    main_text_features /= main_text_features.norm(dim=-1, keepdim=True)
+    main_features = model.encode_text(main_tok)
+    main_features /= main_features.norm(dim=-1, keepdim=True)
 
 # =========================================================
-# 4. 유틸 함수
+# 5. 유틸 함수 (이미지 다운로드, top_k 계산)
 # =========================================================
-def download_image_pil(url: str):
-    """파일 저장 없이 URL -> PIL.Image 로 바로 로드"""
-    last_err = None
+def download_pil(url):
+    last = None
     for _ in range(MAX_RETRY + 1):
         try:
             r = requests.get(url, timeout=REQ_TIMEOUT)
             r.raise_for_status()
             return Image.open(io.BytesIO(r.content)).convert("RGB")
         except Exception as e:
-            last_err = e
-    raise last_err
+            last = e
+    raise last
 
-def topk_from_features(image_feature, text_features, label_pairs, top_k):
-    """
-    image_feature: (1, d)
-    text_features: (n, d)
-    label_pairs  : [(label_id, name), ...]
-    """
-    sim = (image_feature @ text_features.T)[0]
-    values, indices = sim.topk(min(top_k, sim.shape[0]))
+def get_topk(image_feat, text_feats, label_pairs, k):
+    sim = (image_feat @ text_feats.T)[0]
+    v, idxs = sim.topk(min(k, sim.shape[0]))
     out = []
-    for j, idx in enumerate(indices):
-        lid, lname = label_pairs[int(idx)]
-        out.append((lid, lname, float(values[j])))
+    for j, ix in enumerate(idxs):
+        lid, lname = label_pairs[int(ix)]
+        out.append((lid, float(v[j])))
     return out
 
-def compute_labels_for_one_image(pil_img):
-    """
-    1차(main top2) + 2차(sub top3) 통합하여
-    [(label_id, score), ...] 5개 반환
-    """
+def classify_image(pil_img):
     # 이미지 임베딩
-    image_tensor = preprocess(pil_img).unsqueeze(0).to(device)
+    img = preprocess(pil_img).unsqueeze(0).to(device)
     with torch.no_grad():
-        image_feature = model.encode_image(image_tensor)
-        image_feature /= image_feature.norm(dim=-1, keepdim=True)
+        img_feat = model.encode_image(img)
+        img_feat /= img_feat.norm(dim=-1, keepdim=True)
 
     # 1차 main top2
-    main_top = topk_from_features(
-        image_feature,
-        main_text_features,
-        main_labels,
-        TOPK_MAIN
-    )  # [(main_label_id, name, score), ...]
+    main_top = get_topk(img_feat, main_features, main_labels, TOPK_MAIN)
+    # main_top: [(main_label_id, score), ...]
 
-    # main top2의 parent_id에 해당하는 sub 후보 모으기
+    # 2차 sub 후보 가져오기
     sub_candidates = []
-    for mid, _, _ in main_top:
+    for mid, _ in main_top:
         sub_candidates.extend(sub_labels_by_parent.get(mid, []))
 
-    # sub 후보가 없으면 main 결과만 반환
     if not sub_candidates:
-        return [(mid, mscore) for mid, _, mscore in main_top]
+        return main_top  # sub label 없음
 
-    sub_text = [x[1] for x in sub_candidates]
-    sub_tokens = tokenizer(sub_text).to(device)
+    # sub 텍스트 임베딩
+    sub_texts = [x[1] for x in sub_candidates]
+    sub_tok = tokenizer(sub_texts).to(device)
 
     with torch.no_grad():
-        sub_features = model.encode_text(sub_tokens)
-        sub_features /= sub_features.norm(dim=-1, keepdim=True)
+        sub_feat = model.encode_text(sub_tok)
+        sub_feat /= sub_feat.norm(dim=-1, keepdim=True)
 
-    sub_top = topk_from_features(
-        image_feature,
-        sub_features,
-        sub_candidates,
-        TOPK_SUB
-    )  # [(sub_label_id, name, score), ...]
+    sub_top = get_topk(img_feat, sub_feat, sub_candidates, TOPK_SUB)
 
-    # 최종 5개 (main 2 + sub 3)
-    final = [(mid, mscore) for mid, _, mscore in main_top] + \
-            [(sid, sscore) for sid, _, sscore in sub_top]
-    return final
+    # 최종 5개 반환
+    return main_top + sub_top
 
 # =========================================================
-# 5. place_id 범위 입력
+# 6. OFFSET / LIMIT 입력 (행 순서 기반 처리)
 # =========================================================
-start_pid = int(input("처리 시작 place_id 입력: ").strip())
-end_pid   = int(input("처리 끝 place_id 입력: ").strip())
+start_offset = int(input("처리 시작 행 번호(0부터): ").strip())
+limit_count  = int(input("처리할 행 수(LIMIT): ").strip())
 
 # =========================================================
-# 6. place 테이블에서 대상 place 가져오기
+# 7. place 테이블에서 OFFSET/LIMIT으로 가져오기
 # =========================================================
 cur.execute("""
     SELECT place_id, image_urls
     FROM place
-    WHERE place_id BETWEEN %s AND %s
-    ORDER BY place_id ASC
-""", (start_pid, end_pid))
-places = cur.fetchall()
+    ORDER BY place_id
+    OFFSET %s
+    LIMIT %s
+""", (start_offset, limit_count))
 
+places = cur.fetchall()
 print(f"대상 place 수: {len(places)}")
 
 # =========================================================
-# 7. place 단위 라벨링 -> place_label 저장
+# 8. place 단위 라벨링
 # =========================================================
-for place_id, image_urls in tqdm(places, desc="place 단위 라벨링"):
+for place_id, urls_str in tqdm(places, desc="place 라벨링"):
 
-    if image_urls is None or str(image_urls).strip() == "":
+    if urls_str is None:
         continue
 
-    # URL split
-    urls = [u.strip() for u in str(image_urls).split(",") if u.strip()]
+    urls = [u.strip() for u in urls_str.split(",") if u.strip()]
     if not urls:
         continue
 
-    # label_id -> [scores...]
-    score_bucket = {}
+    # 라벨별 score 누적 bucket
+    bucket = {}
 
-    # 모든 이미지 처리
     for url in urls:
         try:
-            pil_img = download_image_pil(url)
-            label_scores = compute_labels_for_one_image(pil_img)
+            img = download_pil(url)
+            label_scores = classify_image(img)  # [(lid, score), ...]
 
-            # 누적
             for lid, sc in label_scores:
-                score_bucket.setdefault(lid, []).append(sc)
+                bucket.setdefault(lid, []).append(sc)
 
-        except Exception as e:
-            print(f"[경고] place_id={place_id} URL 처리 실패: {url} ({e})")
+        except Exception:
             continue
 
-    if not score_bucket:
+    if not bucket:
         continue
 
-    # 라벨별 평균 계산
-    avg_scores = []
-    for lid, sc_list in score_bucket.items():
-        avg = sum(sc_list) / len(sc_list)
+    # 평균 점수 계산
+    avg_list = []
+    for lid, arr in bucket.items():
+        avg = sum(arr) / len(arr)
         if SCALE_TO_PERCENT:
-            avg *= 100.0
-        avg_scores.append((lid, avg))
+            avg *= 100
+        avg_list.append((lid, avg))
 
-    # 평균 상위 3개 선택
-    avg_scores.sort(key=lambda x: x[1], reverse=True)
-    top3 = avg_scores[:3]
+    avg_list.sort(key=lambda x: x[1], reverse=True)
+    top3 = avg_list[:3]
 
-    # 기존 place_label 삭제 후 insert
+    # 기존 place_label 삭제 후 새로 insert
     try:
         cur.execute("DELETE FROM place_label WHERE place_id = %s", (place_id,))
 
-        insert_rows = [(place_id, lid, float(w), "model") for lid, w in top3]
+        rows_to_insert = [(place_id, lid, float(w), "model") for lid, w in top3]
 
         execute_values(cur, """
             INSERT INTO place_label (place_id, label_id, weight, source)
             VALUES %s
-        """, insert_rows)
+        """, rows_to_insert)
 
         conn.commit()
 
     except Exception as e:
         conn.rollback()
-        print(f"[오류] place_id={place_id} DB 저장 실패 ({e})")
-        continue
+        print(f"DB 오류 place_id={place_id}: {e}")
 
-print("완료.")
 cur.close()
 conn.close()
+
+print("완료.")
