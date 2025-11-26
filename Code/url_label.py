@@ -187,31 +187,37 @@ def classify_image(pil_img):
         img_feat = model.encode_image(img)
         img_feat /= img_feat.norm(dim=-1, keepdim=True)
 
-    # 1차 main top2
+    # 1차: main top2
     main_top = get_topk(img_feat, main_features, main_labels, TOPK_MAIN)
+    selected_main_ids = [mid for mid, _ in main_top]
 
-    # 2차 관련 sub 후보
+    # 2차: 선택된 대분류의 소분류만 후보로 사용
     sub_candidates = []
-    for mid, _ in main_top:
+    for mid in selected_main_ids:
         sub_candidates.extend(sub_labels_by_parent.get(mid, []))
 
+    # 소분류 후보가 없으면? 아무 label도 반환하지 않음
     if not sub_candidates:
-        return main_top
+        return []
 
+    # 소분류 임베딩 로딩 또는 계산
     sub_ids = [lid for lid, _ in sub_candidates]
-    sub_missing = load_label_embeddings_from_db(sub_ids)
-    for lid, emb in sub_missing.items():
+    sub_existing = load_label_embeddings_from_db(sub_ids)
+    for lid, emb in sub_existing.items():
         cached_embeddings[lid] = emb
 
     compute_missing_embeddings(sub_candidates)
 
+    # sub embedding 행렬 생성
     sub_features = torch.stack(
         [cached_embeddings[lid] for lid, _ in sub_candidates]
     ).to(device)
 
+    # 최종: 소분류 top_k 반환
     sub_top = get_topk(img_feat, sub_features, sub_candidates, TOPK_SUB)
 
-    return main_top + sub_top
+    return sub_top
+
 
 # =========================================================
 # 8. OFFSET / LIMIT 입력
