@@ -17,7 +17,7 @@ openai                 # OpenAI API
 bcrypt
 tqdm
 open-clip-torch
-PIL
 torch
 torchvision
 transformers
+pillow-heif
