@@ -1,7 +1,7 @@
 # pages/00_Upload.py
 import sys, os, uuid
 import streamlit as st
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, ImageOps
 from io import BytesIO
 from datetime import datetime
 
@@ -18,6 +18,17 @@ if not auth or "user_id" not in auth:
     st.warning("로그인 후에 업로드가 가능해요.")
     st.switch_page("app.py")
     st.stop()
+
+# ---------- 세션 기본값 세팅 ----------
+if "selected_image_keys" not in st.session_state:
+    st.session_state["selected_image_keys"] = []
+
+if "selected_image_meta" not in st.session_state:
+    st.session_state["selected_image_meta"] = []
+
+if "selected_imgs_group_id" not in st.session_state:
+    st.session_state["selected_imgs_group_id"] = None
+
 
 # ---------- 1) UI 공통 적용 ----------
 def apply_ui():
@@ -46,8 +57,19 @@ if hasattr(storage, "bucket"):
     st.caption(f"Bucket: **{getattr(storage, 'bucket', None)}**")
 
 # ---------- 4) 입력 UI ----------
-imgs_id = st.number_input("IMGS ID (에피소드 번호)", min_value=1, step=1)
-files = st.file_uploader("사진 업로드", type=["jpg","jpeg","png","heic","heif"], accept_multiple_files=True)
+imgs_id = st.number_input(
+    "IMGS ID (에피소드 번호)",
+    min_value=1,
+    step=1,
+    key="imgs_id_input",   # ✅ 세션 키에 바인딩
+)
+
+files = st.file_uploader(
+    "사진 업로드",
+    type=["jpg","jpeg","png","heic","heif"],
+    accept_multiple_files=True,
+    key="upload_files",             # ✅ 세션 키에 바인딩
+)
 
 from PIL import ExifTags
 
@@ -150,13 +172,10 @@ if files and imgs_id:
             # 2) 원본(변환 전) 이미지로 EXIF 먼저 추출
             img_raw = Image.open(BytesIO(file_bytes))
             lon, lat, taken_at = extract_gps_datetime(img_raw)  # ✅ EXIF 있는 상태에서 추출
+            img_raw = ImageOps.exif_transpose(img_raw)
             st.write("GPS RAW:", {ExifTags.GPSTAGS.get(k,k):v for k,v in (_get_exif(img_raw).get("GPSInfo") or {}).items()})
 
-
-            # a) 이미지 로딩
-            img = Image.open(file).convert("RGB")
-
-            # 3) 저장용으로만 RGB 변환해서 재인코딩 (EXIF는 굳이 보존 안 해도 됨)
+            # 3) 저장용으로만 RGB 변환해서 재인코딩
             img = img_raw.convert("RGB")
             raw = BytesIO()
             img.save(raw, format="JPEG", quality=92)
@@ -223,7 +242,7 @@ if files and imgs_id:
 
         st.info(
             f"✅ 총 {len(uploaded_keys)}개의 이미지 업로드 완료!\n"
-            f"👉 이제 상단 메뉴에서 **지도 시각화**로 이동해 경로를 확인하세요."
+            f"👉 이제 좌측 메뉴에서 기능들을 이용하실 수 있습니다."
         )
 
         # 미리보기(첫 몇 장)
@@ -235,6 +254,33 @@ if files and imgs_id:
                     use_container_width=True
                 )
 
-        # 페이지 이동 버튼 (선택)
-        if st.button("➡ 지도 시각화로 이동"):
-            st.switch_page("pages/02_Route.py")
+# ---------- 8) 현재 세션에 저장된 에피소드 정보 보여주기 ----------
+saved_keys = st.session_state.get("selected_image_keys", [])
+saved_meta = st.session_state.get("selected_image_meta", [])
+saved_group = st.session_state.get("selected_imgs_group_id", None)
+
+if saved_keys:
+    st.success(
+        f"현재 에피소드 번호: {saved_group} | 업로드된 이미지: {len(saved_keys)}장"
+    )
+
+    with st.expander("현재 에피소드 미리보기", expanded=False):
+        for m in saved_meta[:min(6, len(saved_meta))]:
+            st.image(
+                m["preview_url"] or "❌",
+                caption=f"{m['key']} | taken_at={m['taken_at']} | (lat,lon)=({m['lat']}, {m['lon']})",
+                use_container_width=True
+            )
+else:
+    st.info("아직 업로드된 이미지가 없습니다. 이미지를 업로드해 주세요.")
+
+
+# ---------- 9) 새로운 에피소드 올리기 (초기화 버튼) ----------
+if st.button("🆕 새로운 에피소드 올리기"):
+    # 이전 에피소드 관련 상태 싹 정리
+    st.session_state["selected_image_keys"] = []
+    st.session_state["selected_image_meta"] = []
+    st.session_state["selected_imgs_group_id"] = 1
+
+    st.success("새로운 에피소드 업로드를 시작할 준비가 되었습니다.")
+    st.rerun()

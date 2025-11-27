@@ -85,7 +85,17 @@ def login_user(user_dict: dict):
     }
 
 def logout_user():
-    st.session_state.pop("auth", None)
+    keys_to_clear = [
+        "auth",
+        "selected_image_keys",
+        "selected_image_meta",
+        "selected_imgs_group_id",
+        "route_map_center",
+        "route_map_zoom",
+        "route_tiles_opt",  # 있다면
+    ]
+    for k in keys_to_clear:
+        st.session_state.pop(k, None)
 
 def is_logged_in():
     return "auth" in st.session_state
@@ -101,26 +111,33 @@ def render_sidebar():
             return
 
         st.markdown("### 메뉴")
-        # 파일명은 너 프로젝트의 실제 파일명/경로에 맞춰 수정!
-        # st.page_link가 있으면 그걸 추천, 없으면 st.button + st.switch_page 사용
+        # 업로드 버튼 (위치 맨 위)
+        try:
+            st.page_link("pages/00_Upload.py", label="이미지 업로드", icon="📤")
+        except Exception:
+            if st.button("📤 이미지 업로드"): 
+                st.switch_page("pages/00_Upload.py")
+
+        # 🔽 업로드 버튼 아래 구분선 딱 하나
+        st.divider()
+
         try:
             st.page_link("pages/01_MyPage.py", label="My page", icon="👤")
             st.page_link("pages/02_Route.py", label="Route visualization", icon="🗺️")
             st.page_link("pages/03_Summary.py", label="AI summary", icon="📝")
             st.page_link("pages/04_NextRec.py", label="Next recommendation", icon="✨")
         except Exception:
-            # 구버전 Streamlit이면 버튼 + switch_page로 대체
             if st.button("👤 My Page"): st.switch_page("pages/01_MyPage.py")
             if st.button("🗺️ Route Visualization"): st.switch_page("pages/02_Route.py")
             if st.button("📝 AI Summary"): st.switch_page("pages/03_Summary.py")
             if st.button("✨ Next Recommendation"): st.switch_page("pages/04_NextRec.py")
 
         st.divider()
+
         if st.button("로그아웃"):
-            st.success("로그아웃 되었습니다.")
-            time.sleep(2)
             logout_user()
-            st.rerun()
+            st.success("로그아웃 되었습니다. 로그인 화면으로 이동합니다.")
+            st.switch_page("app.py")  # ✅ 즉시 로그인 페이지로 이동
 
 
 def main():

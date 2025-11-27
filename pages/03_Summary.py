@@ -18,8 +18,8 @@ st.title("📸 AI 여행일기 생성")
 # Upload 페이지에서 선택한 s3 키들을 세션으로 전달
 keys = st.session_state.get("selected_image_keys", [])
 if not keys:
-    st.warning("먼저 Upload 페이지에서 이미지를 업로드하세요.")
-    time.sleep(0.7)
+    st.info("먼저 Upload 페이지에서 이미지를 업로드해주세요.")
+    time.sleep(1)
     st.switch_page("pages/00_Upload.py")
     st.stop()
 

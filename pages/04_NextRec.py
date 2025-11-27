@@ -19,6 +19,16 @@ def apply_ui():
 
 apply_ui() 
 
+st.title("📍 다음 장소 추천 받기 (S3 이미지 → 라벨링 → 추천)")
+
+# Upload 페이지에서 선택한 S3 key들
+keys = st.session_state.get("selected_image_keys", [])
+if not keys:
+    st.info("먼저 Upload 페이지에서 이미지를 업로드해주세요.")
+    time.sleep(1)
+    st.switch_page("pages/00_Upload.py")
+    st.stop()
+
 # =========================================================
 # 0. DB 설정 (기존 그대로 사용)
 # =========================================================
@@ -362,15 +372,6 @@ def get_recommendations(cur, photo_label_list):
 # =========================================================
 # 7. Streamlit UI + session_state 기반 실행
 # =========================================================
-st.title("📍 다음 장소 추천 받기 (S3 이미지 → 라벨링 → 추천)")
-
-# Upload 페이지에서 선택한 S3 key들
-keys = st.session_state.get("selected_image_keys", [])
-if not keys:
-    st.warning("먼저 Upload 페이지에서 이미지를 업로드/선택하세요.")
-    time.sleep(0.7)
-    st.switch_page("pages/00_Upload.py")
-    st.stop()
 
 st.write(f"선택된 이미지 개수: {len(keys)}")
 
@@ -424,7 +425,7 @@ if st.button("다음 장소 추천받기"):
             st.stop()
 
         conn.commit()
-        st.success("선택된 이미지에 대한 라벨링이 완료되었습니다. 추천을 계산합니다...")
+        st.success("선택된 이미지에 대한 라벨링이 완료되었습니다. 유사도를 계산합니다...")
 
         # 2) 사진별로 3개/2개 매치 장소 찾기
         strong_ids: set[int] = set()   # 라벨 3개 모두 매치된 place_id들
