@@ -10,7 +10,7 @@ from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv(), override=True)
 
 from core.geocode import kakao_reverse
-from core.db import get_address_cache_by_coord, upsert_address_cache
+from core.db import get_address_cache_by_coord, upsert_address_cache, upsert_episode_for_upload, refresh_episode_meta
 
 # ---------- 0) 인증 가드 ----------
 auth = st.session_state.get("auth")
@@ -29,6 +29,9 @@ if "selected_image_meta" not in st.session_state:
 if "selected_imgs_group_id" not in st.session_state:
     st.session_state["selected_imgs_group_id"] = None
 
+if "episode_title" not in st.session_state:
+    st.session_state["episode_title"] = ""
+
 
 # ---------- 1) UI 공통 적용 ----------
 def apply_ui():
@@ -44,7 +47,7 @@ from core.storage import get_storage
 from core.db import insert_photo_record
 
 
-st.title("Image Upload")
+st.title("이미지 업로드")
 
 # ---------- 2) 사용자 정보 ----------
 user_id = auth["user_id"]
@@ -61,7 +64,13 @@ imgs_id = st.number_input(
     "IMGS ID (에피소드 번호)",
     min_value=1,
     step=1,
-    key="imgs_id_input",   # ✅ 세션 키에 바인딩
+    key="selected_imgs_group_id",   # ✅ 세션 키에 바인딩
+)
+
+episode_title = st.text_input(
+    "에피소드 제목",
+    key="episode_title",
+    placeholder="예: 한강 나들이, 부산 2박 3일 여행",
 )
 
 files = st.file_uploader(
@@ -238,7 +247,12 @@ if files and imgs_id:
     if uploaded_keys:
         st.session_state["selected_image_keys"] = uploaded_keys
         st.session_state["selected_image_meta"] = meta_pack
-        st.session_state["selected_imgs_group_id"] = int(imgs_id)
+
+        episode_no = int(imgs_id)
+        title = st.session_state.get("episode_title") or None
+
+        upsert_episode_for_upload(user_id, episode_no, title=title)
+        refresh_episode_meta(user_id, episode_no)
 
         st.info(
             f"✅ 총 {len(uploaded_keys)}개의 이미지 업로드 완료!\n"
@@ -280,7 +294,6 @@ if st.button("🆕 새로운 에피소드 올리기"):
     # 이전 에피소드 관련 상태 싹 정리
     st.session_state["selected_image_keys"] = []
     st.session_state["selected_image_meta"] = []
-    st.session_state["selected_imgs_group_id"] = 1
 
     st.success("새로운 에피소드 업로드를 시작할 준비가 되었습니다.")
     st.rerun()

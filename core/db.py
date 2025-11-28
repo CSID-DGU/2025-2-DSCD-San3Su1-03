@@ -220,3 +220,144 @@ def get_address_cache_by_coord(lat: float, lon: float, provider: str = "kakao") 
                         else json.loads(row["addr_json"]),
             }
     return None
+
+#######################
+def upsert_episode_for_upload(user_id: str, episode_no: int, title: str | None = None):
+    """
+    업로드 시점에 에피소드 메타 정보 upsert.
+    (시작/끝 시각, 사진 수는 뒤에서 한 번에 갱신해도 됨)
+    """
+    eng = get_engine()
+    with eng.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO episodes (user_id, episode_no, title, created_at, updated_at)
+                VALUES (:user_id, :episode_no, :title, NOW(), NOW())
+                ON CONFLICT (user_id, episode_no)
+                DO UPDATE SET title = COALESCE(:title, episodes.title), updated_at = NOW()
+            """),
+            {"user_id": user_id, "episode_no": episode_no, "title": title,}
+        )
+
+
+def refresh_episode_meta(user_id: str, episode_no: int):
+    """
+    photos 테이블에서,
+    S3 key prefix (users/{user_id}/imgs/{episode_no}/...) 기준으로
+    해당 에피소드의 시작/끝 시각, 사진 수를 갱신.
+    """
+    eng = get_engine()
+
+    # S3 key 패턴과 동일하게 prefix 구성
+    prefix = f"users/{user_id}/imgs/{episode_no}/"
+
+    with eng.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT 
+                    MIN(taken_at_utc) AS started_at,
+                    MAX(taken_at_utc) AS ended_at,
+                    COUNT(*)          AS photo_count
+                FROM photos
+                WHERE user_id = :user_id
+                  AND key LIKE :prefix
+            """),
+            {"user_id": user_id, "prefix": prefix + "%"}
+        ).mappings().first()
+
+        # 해당 에피소드에 사진이 하나도 없으면 그냥 리턴
+        if not row or row["photo_count"] == 0:
+            return
+
+        conn.execute(
+            text("""
+                INSERT INTO episodes (
+                    user_id, episode_no, started_at, ended_at,
+                    photo_count, created_at, updated_at
+                )
+                VALUES (
+                    :user_id, :episode_no, :started_at, :ended_at,
+                    :photo_count, NOW(), NOW()
+                )
+                ON CONFLICT (user_id, episode_no)
+                DO UPDATE SET
+                    started_at  = EXCLUDED.started_at,
+                    ended_at    = EXCLUDED.ended_at,
+                    photo_count = EXCLUDED.photo_count,
+                    updated_at  = NOW()
+            """),
+            {
+                "user_id": user_id,
+                "episode_no": episode_no,
+                "started_at": row["started_at"],
+                "ended_at": row["ended_at"],
+                "photo_count": row["photo_count"],
+            }
+        )
+
+
+def fetch_episodes_for_user(user_id: str):
+    """
+    유저의 모든 에피소드 리스트 반환 (최신 순).
+    """
+    eng = get_engine()
+    with eng.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT
+                    id,
+                    episode_no,
+                    title,
+                    started_at,
+                    ended_at,
+                    photo_count,
+                    created_at
+                FROM episodes
+                WHERE user_id = :user_id
+                ORDER BY started_at NULLS LAST, episode_no ASC
+            """),
+            {"user_id": user_id}
+        ).mappings().all()
+    return rows
+
+
+def insert_episode_diary(
+    user_id: str,
+    episode_no: int,
+    mood: str,
+    title: str,
+    content: str,
+    tags: str | None = None,
+):
+    eng = get_engine()
+    with eng.begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO episode_diaries (user_id, episode_no, mood, title, content, tags, created_at)
+                VALUES (:user_id, :episode_no, :mood, :title, :content, :tags, NOW())
+            """),
+            {
+                "user_id": user_id,
+                "episode_no": episode_no,
+                "mood": mood,
+                "title": title,
+                "content": content,
+                "tags": tags,
+            }
+        )
+
+
+def fetch_diaries_for_episode(user_id: str, episode_no: int):
+    eng = get_engine()
+    with eng.connect() as conn:
+        rows = conn.execute(
+            text("""
+                SELECT id, mood, title, content, tags, created_at
+                FROM episode_diaries
+                WHERE user_id = :user_id
+                  AND episode_no = :episode_no
+                ORDER BY created_at DESC
+            """),
+            {"user_id": user_id, "episode_no": episode_no}
+        ).mappings().all()
+    return rows

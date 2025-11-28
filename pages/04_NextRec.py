@@ -425,7 +425,7 @@ if st.button("다음 장소 추천받기"):
             st.stop()
 
         conn.commit()
-        st.success("선택된 이미지에 대한 라벨링이 완료되었습니다. 유사도를 계산합니다...")
+        st.success("업로드된 사진들에 대한 라벨링이 완료되었습니다. 라벨과 매치되는 장소를 추천해드릴게요.")
 
         # 2) 사진별로 3개/2개 매치 장소 찾기
         strong_ids: set[int] = set()   # 라벨 3개 모두 매치된 place_id들
@@ -503,7 +503,7 @@ if st.button("다음 장소 추천받기"):
 
         # 5) 화면 출력
         if not strong_sample and not medium_sample:
-            st.info("라벨 3개 또는 2개가 동시에 매치되는 추천 장소를 찾지 못했습니다.")
+            st.info("업로드된 사진들에 맞는 추천 장소를 찾지 못했어요.")
         else:
             if strong_sample:
                 st.subheader("🔥 강력 추천 (라벨 3개 매치)")
@@ -517,6 +517,10 @@ if st.button("다음 장소 추천받기"):
                             f"  *(place_id={pid})*"
                         )
 
+                # 강력추천이 있는 경우는 여기서 끝 → medium 출력하지 않음
+                st.stop()
+            
+            # ✨ 강력추천이 없을 때만 → 중간추천 출력
             if medium_sample:
                 st.subheader("✨ 중간 추천 (라벨 2개 매치)")
                 st.caption(f"총 {medium_total}개 중 랜덤 {len(medium_sample)}개를 보여줍니다.")
