@@ -2,6 +2,8 @@
 import os, sys
 import streamlit as st
 import pandas as pd
+import folium
+from streamlit_folium import st_folium
 from datetime import datetime
 
 # ---------- 0) 인증 가드 ----------
@@ -28,9 +30,19 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from core.db import (
     fetch_episodes_for_user,
     fetch_diaries_for_episode,
-    fetch_photos_by_group_prefix,  # 이미 있을 거라고 가정
+    fetch_photos_by_group_prefix,
 )
 from core.storage import get_storage
+
+# 🔹 전역 storage 객체 한 번만 생성
+storage = get_storage()
+
+def preview_url(key: str) -> str | None:
+    """S3 key → 실제 접근 가능한 URL 생성"""
+    try:
+        return storage.url(key)
+    except Exception:
+        return None
 
 st.title("My Page - 과거 에피소드 기록")
 
@@ -76,44 +88,38 @@ selected_idx = st.selectbox(
 selected = episodes_df.loc[selected_idx]
 episode_no = int(selected["episode_no"])
 
+# 🔹 이 에피소드의 사진들을 한 번만 로드 + URL까지 붙여두기
+photos = fetch_photos_by_group_prefix(user_id, episode_no)
+if photos:
+    photos_df = pd.DataFrame(photos)
+    # key → 실제 접근 가능한 URL
+    photos_df["preview_url"] = photos_df["key"].apply(preview_url)
+else:
+    photos_df = pd.DataFrame()
+
 st.markdown("---")
 
 # ---------- 4) 레이아웃 ----------
 left, right = st.columns([2, 3])
 
-# ========== 왼쪽: 사진 썸네일 & 간단 지도 프리뷰 ==========
+# ========== 왼쪽: 사진 썸네일 ==========
 with left:
     st.subheader("사진 & 간단 프리뷰", divider="gray")
 
-    photos = fetch_photos_by_group_prefix(user_id, episode_no)
-    if not photos:
+    if photos_df.empty:
         st.info("이 에피소드에는 아직 사진이 없습니다.")
     else:
-        storage = get_storage()
-        # 썸네일 몇 장만
-        preview_urls = []
-        for r in photos[:12]:
-            try:
-                url = storage.url(r["key"])
-                preview_urls.append(url)
-            except Exception:
-                continue
+        urls = [u for u in photos_df["preview_url"].tolist() if u]
 
-        if preview_urls:
+        if urls:
             st.markdown("#### 사진 미리보기 (일부)")
-            st.image(preview_urls, width=160)
+            st.image(urls[:12], width=160)
         else:
             st.caption("썸네일을 불러오지 못했습니다.")
 
-        st.caption(f"총 사진 수: {len(photos)} 장")
+        st.caption(f"총 사진 수: {len(photos_df)} 장")
 
-        # 간단한 안내
-        st.info(
-            "👉 '이 에피소드로 이동경로 지도 보기' 버튼을 누르면\n"
-            "지도 시각화 페이지에서 이 에피소드의 이동 경로를 자세히 볼 수 있어요."
-        )
-
-# ========== 오른쪽: 에피소드/일기 정보 ==========
+# ========== 오른쪽: 에피소드 정보 + 지도 + AI 일기 ==========
 with right:
     st.subheader("에피소드 정보", divider="gray")
     st.write(f"**에피소드 번호:** `{episode_no}`")
@@ -128,28 +134,104 @@ with right:
 
     st.write(f"**사진 수:** `{selected.get('photo_count') or 0}` 장")
 
-    # 저장된 AI 일기 목록
+    # --- 이동 경로 지도 ---
+    st.subheader("이동 경로 지도", divider="gray")
+
+    if photos_df.empty:
+        st.info("이 에피소드에는 위치 정보가 있는 사진이 없어요.")
+    else:
+        # lat/lon/timestamp 정리
+        df_map = photos_df.copy()
+        df_map["lat"] = pd.to_numeric(df_map["lat"], errors="coerce")
+        df_map["lon"] = pd.to_numeric(df_map["lon"], errors="coerce")
+        df_map["taken_at_utc"] = pd.to_datetime(df_map.get("taken_at_utc"), errors="coerce")
+
+        df_map = df_map.dropna(subset=["lat", "lon"])
+        if df_map.empty:
+            st.info("위치 정보가 있는 사진이 없습니다.")
+        else:
+            # 중심 & 전체 범위 계산
+            coords = df_map[["lat", "lon"]].to_numpy().tolist()
+            center = [float(df_map["lat"].mean()), float(df_map["lon"].mean())]
+
+            m = folium.Map(
+                location=center,
+                zoom_start=13,
+                tiles="OpenStreetMap",
+                control_scale=True,
+            )
+
+            # 경로 라인
+            folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
+
+            # 마커들
+            df_map = df_map.sort_values(["taken_at_utc", "id"],
+                                        na_position="last").reset_index(drop=True)
+            N = len(df_map)
+
+            for i, r in df_map.iterrows():
+                lat, lon = float(r["lat"]), float(r["lon"])
+                t = r["taken_at_utc"]
+
+                # 1) S3 이미지 URL
+                try:
+                    img_url = storage.url(r["key"])
+                except Exception:
+                    img_url = None
+
+                # 2) 촬영 시각 문자열
+                time_str = f"{t:%Y-%m-%d %H:%M}" if pd.notna(t) else ""
+
+                # 3) hover 툴팁: 사진 + 시간
+                if img_url:
+                    tooltip_html = (
+                        "<div style='width:200px;border:1px solid #ddd;"
+                        "background-color:white;padding:4px;border-radius:6px;'>"
+                        f"<img src='{img_url}' "
+                        "style='width:100%;border-radius:4px;margin-bottom:4px;'>"
+                        f"<div style='font-size:11px;color:#333;'>{time_str}</div>"
+                        "</div>"
+                    )
+                else:
+                    tooltip_html = time_str or "photo"
+
+                tooltip = folium.Tooltip(tooltip_html, sticky=True)
+
+                # 4) 아이콘 모양은 기존 그대로
+                if i == 0:
+                    icon = folium.Icon(color="green", icon="play", prefix="fa")
+                elif i == N - 1:
+                    icon = folium.Icon(color="darkred", icon="flag", prefix="fa")
+                else:
+                    icon = folium.Icon(color="red", icon="map-marker", prefix="fa")
+
+                folium.Marker(
+                    [lat, lon],
+                    icon=icon,
+                    tooltip=tooltip,
+                ).add_to(m)
+
+            # 전체 마커가 보이도록 fit_bounds (에피소드 당 한 번만 실행)
+            fit_key = f"mypage_map_fit_once_{episode_no}"
+            first_fit = not st.session_state.get(fit_key, False)
+
+            if coords and first_fit:
+                m.fit_bounds(coords)
+                st.session_state[fit_key] = True
+
+            # st_folium 반환값은 안 쓰고, 그냥 렌더만 함 → 조작해도 초기화 안 됨
+            st_folium(m, width=None, height=520, key=f"mypage_map_{episode_no}")
+            
+    # --- 저장된 AI 일기 목록 ---
     st.markdown("### 저장된 AI 일기")
     diaries = fetch_diaries_for_episode(user_id, episode_no)
     if diaries:
         for d in diaries:
-            with st.expander(f"[{d['mood'] or 'Unknown'}] {d['title'] or '(제목 없음)'}  ·  {d['created_at'].date()}"):
+            with st.expander(
+                f"[{d['mood'] or 'Unknown'}] {d['title'] or '(제목 없음)'}  ·  {d['created_at'].date()}"
+            ):
                 if d.get("tags"):
                     st.caption(f"태그: {d['tags']}")
                 st.write(d["content"])
     else:
         st.caption("아직 저장된 AI 일기가 없습니다.\nAI 요약/일기 페이지에서 생성 후 '저장하기'를 눌러보세요.")
-
-    st.markdown("### 에피소드 열기")
-    if st.button("이 에피소드로 이동경로 지도 보기"):
-        # Route 페이지에서 사용할 세션 상태 세팅
-        st.session_state["selected_image_keys"] = []  # 굳이 안 채워도 됨
-        st.session_state["selected_imgs_group_id"] = episode_no
-        st.switch_page("pages/02_Route.py")
-
-    if st.button("이 에피소드로 AI 일기/요약 생성하기"):
-        st.session_state["selected_image_keys"] = []  # 필요하면 채워도 됨
-        st.session_state["selected_imgs_group_id"] = episode_no
-        st.switch_page("pages/03_Summary.py")  # 네 AI 요약 페이지 파일명에 맞게 수정
-
-

@@ -259,14 +259,6 @@ if files and imgs_id:
             f"👉 이제 좌측 메뉴에서 기능들을 이용하실 수 있습니다."
         )
 
-        # 미리보기(첫 몇 장)
-        with st.expander("미리보기", expanded=False):
-            for m in meta_pack[:min(6, len(meta_pack))]:
-                st.image(
-                    m["preview_url"] or "❌",
-                    caption=f"{m['key']} | taken_at={m['taken_at']} | (lat,lon)=({m['lat']}, {m['lon']})",
-                    use_container_width=True
-                )
 
 # ---------- 8) 현재 세션에 저장된 에피소드 정보 보여주기 ----------
 saved_keys = st.session_state.get("selected_image_keys", [])

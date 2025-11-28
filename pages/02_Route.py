@@ -186,9 +186,6 @@ with left:
 
     st.caption("시간 범위를 줄이면 이동 경로를 더 세밀하게 볼 수 있어요.")
 
-    st.markdown("---")
-    if st.button("➡ 다른 에피소드 업로드"):
-        st.switch_page("pages/00_Upload.py")
 
 with right:
     st.subheader("이동 경로 지도", divider="gray")
@@ -198,6 +195,12 @@ with right:
         float(df_show["lat"].mean()),
         float(df_show["lon"].mean())
     ]
+
+    # 이번 실행이 '처음 진입'인지 체크 (center/zoom이 아직 없으면 True)
+    first_load = (
+        "route_map_center" not in st.session_state
+        or "route_map_zoom" not in st.session_state
+    )
 
     # 세션 기본값
     if "route_map_center" not in st.session_state:
@@ -231,8 +234,7 @@ with right:
 
     # ---------- 10) 경로 라인 (시간순) ----------
     coords = df_show[["lat", "lon"]].to_numpy().tolist()
-    if len(coords) >= 2:
-        folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
+    folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
 
     # ---------- 11) 마커 (시작/중간/종료 아이콘 구분) ----------
     N = len(df_show)
@@ -276,6 +278,24 @@ with right:
             # popup=folium.Popup(hover_html, max_width=320),
             tooltip=tooltip,   # 👈 이제 hover 시 사진+정보 표시
         ).add_to(m)
+    # 👉 여기서 처음 진입일 때 한 번만 전체 마커가 다 보이도록 맞춰주기
+    if coords and first_load:
+        lats = [c[0] for c in coords]
+        lons = [c[1] for c in coords]
+        min_lat, max_lat = min(lats), max(lats)
+        min_lon, max_lon = min(lons), max(lons)
+
+        # 여유 padding
+        lat_span = max(max_lat - min_lat, 0.001)
+        lon_span = max(max_lon - min_lon, 0.001)
+
+        lat_pad = lat_span * 0.2    # 위아래 20% 여유
+        lon_pad = lon_span * 0.3    # 좌우 30% 여유 (왼쪽 붙는 거 방지)
+
+        sw = [min_lat - lat_pad, min_lon - lon_pad]  # southwest
+        ne = [max_lat + lat_pad, max_lon + lon_pad]  # northeast
+
+        m.fit_bounds([sw, ne])
 
     # ---------- 12) 지도 렌더 + 상태 회수 ----------
     map_state = st_folium(
