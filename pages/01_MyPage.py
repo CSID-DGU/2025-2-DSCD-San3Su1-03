@@ -1,5 +1,5 @@
 # pages/01_MyPage.py
-import os, sys
+import os, sys, time
 import streamlit as st
 import pandas as pd
 import folium
@@ -49,7 +49,9 @@ st.title("My Page - 과거 에피소드 기록")
 # ---------- 2) 에피소드 목록 로드 ----------
 rows = fetch_episodes_for_user(user_id)
 if not rows:
-    st.info("아직 저장된 에피소드가 없습니다.\n\n먼저 이미지를 업로드해보세요.")
+    st.info("아직 저장된 에피소드가 없습니다. 먼저 이미지를 업로드해보세요.")
+    time.sleep(1)
+    st.switch_page("pages/00_Upload.py")
     st.stop()
 
 episodes_df = pd.DataFrame(rows)
@@ -113,7 +115,19 @@ with left:
 
         if urls:
             st.markdown("#### 사진 미리보기 (일부)")
-            st.image(urls[:12], width=160)
+
+            preview_urls = urls[:12]  # 최대 12장만 미리보기
+            n_cols = 2                # 🔹 한 행에 2장
+
+            for i in range(0, len(preview_urls), n_cols):
+                row_urls = preview_urls[i:i + n_cols]
+                cols = st.columns(n_cols, gap="small")
+
+                for col, url in zip(cols, row_urls):
+                    with col:
+                        # 컨테이너 폭에 맞게 채우기 → 인스타그램 타일 느낌
+                        st.image(url, use_container_width=True)
+
         else:
             st.caption("썸네일을 불러오지 못했습니다.")
 
@@ -150,39 +164,43 @@ with right:
         if df_map.empty:
             st.info("위치 정보가 있는 사진이 없습니다.")
         else:
-            # 중심 & 전체 범위 계산
+            # 중심 & 전체 좌표
+            df_map = df_map.sort_values(["taken_at_utc", "id"],
+                                        na_position="last").reset_index(drop=True)
             coords = df_map[["lat", "lon"]].to_numpy().tolist()
             center = [float(df_map["lat"].mean()), float(df_map["lon"].mean())]
 
+            # 지도 생성
             m = folium.Map(
                 location=center,
                 zoom_start=13,
                 tiles="OpenStreetMap",
                 control_scale=True,
+                max_zoom=18,
             )
 
-            # 경로 라인
-            folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
+            # 경로 라인 추가
+            if coords:
+                folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
 
-            # 마커들
-            df_map = df_map.sort_values(["taken_at_utc", "id"],
-                                        na_position="last").reset_index(drop=True)
+            # 🔥 마커들을 모아두는 FeatureGroup 생성 (핵심 포인트)
+            marker_group = folium.FeatureGroup(name="markers")
+
             N = len(df_map)
-
             for i, r in df_map.iterrows():
                 lat, lon = float(r["lat"]), float(r["lon"])
                 t = r["taken_at_utc"]
 
-                # 1) S3 이미지 URL
+                # S3 이미지 URL
                 try:
                     img_url = storage.url(r["key"])
                 except Exception:
                     img_url = None
 
-                # 2) 촬영 시각 문자열
+                # 촬영 시각 문자열
                 time_str = f"{t:%Y-%m-%d %H:%M}" if pd.notna(t) else ""
 
-                # 3) hover 툴팁: 사진 + 시간
+                # Tooltip HTML
                 if img_url:
                     tooltip_html = (
                         "<div style='width:200px;border:1px solid #ddd;"
@@ -197,7 +215,7 @@ with right:
 
                 tooltip = folium.Tooltip(tooltip_html, sticky=True)
 
-                # 4) 아이콘 모양은 기존 그대로
+                # 아이콘
                 if i == 0:
                     icon = folium.Icon(color="green", icon="play", prefix="fa")
                 elif i == N - 1:
@@ -205,23 +223,32 @@ with right:
                 else:
                     icon = folium.Icon(color="red", icon="map-marker", prefix="fa")
 
+                # 🔥 Marker를 직접 m에 add하지 않고 marker_group에만 add
                 folium.Marker(
                     [lat, lon],
                     icon=icon,
                     tooltip=tooltip,
-                ).add_to(m)
+                ).add_to(marker_group)
 
-            # 전체 마커가 보이도록 fit_bounds (에피소드 당 한 번만 실행)
-            fit_key = f"mypage_map_fit_once_{episode_no}"
-            first_fit = not st.session_state.get(fit_key, False)
+            # 그룹을 맵에 한 번에 추가
+            marker_group.add_to(m)
 
-            if coords and first_fit:
-                m.fit_bounds(coords)
-                st.session_state[fit_key] = True
+            # 🔹 모든 마커가 한 화면에 들어오도록 zoom 조정
+            if coords:
+                lats = [c[0] for c in coords]
+                lons = [c[1] for c in coords]
 
-            # st_folium 반환값은 안 쓰고, 그냥 렌더만 함 → 조작해도 초기화 안 됨
+                padding = 0.005
+                min_lat, max_lat = min(lats) - padding, max(lats) + padding
+                min_lon, max_lon = min(lons) - padding, max(lons) + padding
+                bounds = [[min_lat, min_lon], [max_lat, max_lon]]
+
+                m.fit_bounds(bounds, max_zoom=13)
+
+            # 지도 렌더링
             st_folium(m, width=None, height=520, key=f"mypage_map_{episode_no}")
-            
+    
+
     # --- 저장된 AI 일기 목록 ---
     st.markdown("### 저장된 AI 일기")
     diaries = fetch_diaries_for_episode(user_id, episode_no)
@@ -235,3 +262,15 @@ with right:
                 st.write(d["content"])
     else:
         st.caption("아직 저장된 AI 일기가 없습니다.\nAI 요약/일기 페이지에서 생성 후 '저장하기'를 눌러보세요.")
+
+    st.divider()
+    # ---------- 9) 새로운 에피소드 올리기 (초기화 버튼) ----------
+    if st.button("🆕 새로운 에피소드 올리기"):
+        # 이전 에피소드 관련 상태 싹 정리
+        st.session_state["selected_image_keys"] = []
+        st.session_state["selected_image_meta"] = []
+        st.session_state["upload_files"] = None
+        st.session_state["episode_title"] = ""
+        st.success("새로운 에피소드 업로드를 시작할 준비가 되었습니다.")
+        st.switch_page("pages/00_Upload.py")
+        st.rerun()

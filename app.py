@@ -170,7 +170,7 @@ def main():
         else:
             st.session_state["_login_error"] = "이메일 또는 비밀번호가 올바르지 않습니다."
 
-    st.title("📍Life Recorder (Streamlit + PostgreSQL)📍")
+    st.title("📍Life-Recorder: 사진 속 메타데이터 기반 자동 여행·일상 기록 플랫폼📍")
 
     # 3) 미로그인일 때만 탭 렌더
     if not is_logged_in():

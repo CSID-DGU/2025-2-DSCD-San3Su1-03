@@ -190,80 +190,53 @@ with left:
 with right:
     st.subheader("이동 경로 지도", divider="gray")
 
-    # ---------- 9) 지도의 중심/타일 (세션으로 상태 유지) ----------
-    default_center = [
+    # ---------- 지도 중심 계산 ----------
+    center = [
         float(df_show["lat"].mean()),
         float(df_show["lon"].mean())
     ]
 
-    # 이번 실행이 '처음 진입'인지 체크 (center/zoom이 아직 없으면 True)
-    first_load = (
-        "route_map_center" not in st.session_state
-        or "route_map_zoom" not in st.session_state
-    )
-
-    # 세션 기본값
-    if "route_map_center" not in st.session_state:
-        st.session_state["route_map_center"] = default_center
-    if "route_map_zoom" not in st.session_state:
-        st.session_state["route_map_zoom"] = 13
-
-    center = st.session_state["route_map_center"]
-    zoom = st.session_state["route_map_zoom"]
-
-    # center 타입 정규화 (dict → [lat, lon])
-    if isinstance(center, dict):
-        lat = center.get("lat")
-        lng = center.get("lng") or center.get("lon")
-        if lat is not None and lng is not None:
-            center = [lat, lng]
-            st.session_state["route_map_center"] = center
-        else:
-            center = default_center
-            st.session_state["route_map_center"] = center
-    elif not (isinstance(center, (list, tuple)) and len(center) == 2):
-        center = default_center
-        st.session_state["route_map_center"] = center
-
+    # folium 지도 생성
     m = folium.Map(
         location=center,
-        zoom_start=int(zoom),
+        zoom_start=13,
         tiles="OpenStreetMap",
         control_scale=True,
+        max_zoom=18,
     )
 
-    # ---------- 10) 경로 라인 (시간순) ----------
+    # ---------- 경로 PolyLine ----------
     coords = df_show[["lat", "lon"]].to_numpy().tolist()
-    folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
+    if coords:
+        folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
 
-    # ---------- 11) 마커 (시작/중간/종료 아이콘 구분) ----------
+    # ---------- FeatureGroup: 마커를 한 번에 렌더 ----------
+    marker_group = folium.FeatureGroup(name="markers")
+
     N = len(df_show)
     for i, r in df_show.reset_index(drop=True).iterrows():
         lat, lon = float(r["lat"]), float(r["lon"])
-        t = r["taken_at_utc"]
+        time_val = r["taken_at_utc"]
         addr_txt = pretty_addr(r.get("addr_json"))
         img_url = preview_url(r["key"])
 
-        # ✨ hover 시에 보여줄 HTML (사진 + 정보)
+        # Tooltip (사진 + 시간 + 주소 + lat/lon)
         parts = []
         if img_url:
             parts.append(
                 f'<img src="{img_url}" '
-                f'style="max-width:220px;height:auto;display:block;'
-                f'margin-bottom:4px;border-radius:6px;">'
+                f'style="max-width:220px;height:auto;border-radius:6px;'
+                f'display:block;margin-bottom:4px;">'
             )
-        if pd.notna(t):
-            parts.append(f"<b>{t:%Y-%m-%d %H:%M:%S}</b><br>")
+        if pd.notna(time_val):
+            parts.append(f"<b>{time_val:%Y-%m-%d %H:%M:%S}</b><br>")
         if addr_txt:
             parts.append(f"{addr_txt}<br>")
         parts.append(f"({lat:.5f}, {lon:.5f})")
 
-        hover_html = "".join(parts)
+        tooltip = folium.Tooltip("".join(parts), sticky=True)
 
-        # folium Tooltip 객체 (hover용)
-        tooltip = Tooltip(hover_html, sticky=True)
-
-        # 아이콘 (시작/중간/종료 구분)
+        # 아이콘 구분
         if i == 0:
             icon = folium.Icon(color="green", icon="play", prefix="fa")
         elif i == N - 1:
@@ -271,58 +244,36 @@ with right:
         else:
             icon = folium.Icon(color="red", icon="map-marker", prefix="fa")
 
+        # Marker → FeatureGroup에만 추가
         folium.Marker(
             [lat, lon],
+            tooltip=tooltip,
             icon=icon,
-            # popup은 필요없으면 None으로 두거나 아예 빼도 됨
-            # popup=folium.Popup(hover_html, max_width=320),
-            tooltip=tooltip,   # 👈 이제 hover 시 사진+정보 표시
-        ).add_to(m)
-    # 👉 여기서 처음 진입일 때 한 번만 전체 마커가 다 보이도록 맞춰주기
-    if coords and first_load:
+        ).add_to(marker_group)
+
+    # FeatureGroup을 지도에 추가
+    marker_group.add_to(m)
+
+    # ---------- 전체 좌표 기준으로 자동 zoom 조정 ----------
+    if coords:
         lats = [c[0] for c in coords]
         lons = [c[1] for c in coords]
-        min_lat, max_lat = min(lats), max(lats)
-        min_lon, max_lon = min(lons), max(lons)
 
-        # 여유 padding
-        lat_span = max(max_lat - min_lat, 0.001)
-        lon_span = max(max_lon - min_lon, 0.001)
+        padding = 0.005
+        min_lat, max_lat = min(lats) - padding, max(lats) + padding
+        min_lon, max_lon = min(lons) - padding, max(lons) + padding
+        bounds = [[min_lat, min_lon], [max_lat, max_lon]]
 
-        lat_pad = lat_span * 0.2    # 위아래 20% 여유
-        lon_pad = lon_span * 0.3    # 좌우 30% 여유 (왼쪽 붙는 거 방지)
+        # 마커가 항상 한 화면에 들어오도록
+        m.fit_bounds(bounds, max_zoom=13)
 
-        sw = [min_lat - lat_pad, min_lon - lon_pad]  # southwest
-        ne = [max_lat + lat_pad, max_lon + lon_pad]  # northeast
-
-        m.fit_bounds([sw, ne])
-
-    # ---------- 12) 지도 렌더 + 상태 회수 ----------
-    map_state = st_folium(
+    # ---------- 지도 렌더링 ----------
+    st_folium(
         m,
         width=None,
         height=620,
-        key="route_map",
+        key=f"route_map_{user_id}",
     )
 
-    # folium 인터랙션 결과로부터 center/zoom을 회수해서 세션에 저장
-    if isinstance(map_state, dict):
-        center_info = map_state.get("center")
-        zoom_info = map_state.get("zoom")
-
-        if center_info:
-            if isinstance(center_info, dict):
-                lat = center_info.get("lat")
-                lng = center_info.get("lng") or center_info.get("lon")
-                if lat is not None and lng is not None:
-                    st.session_state["route_map_center"] = [lat, lng]
-            elif isinstance(center_info, (list, tuple)) and len(center_info) == 2:
-                st.session_state["route_map_center"] = list(center_info)
-
-        if zoom_info is not None:
-            try:
-                st.session_state["route_map_zoom"] = int(zoom_info)
-            except Exception:
-                pass
-
     st.caption(f"표시된 사진 수(현재 범위): {len(df_show)} / 전체 유효 좌표 사진 수: {len(df)}")
+

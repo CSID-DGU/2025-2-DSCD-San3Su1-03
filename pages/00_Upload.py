@@ -26,11 +26,14 @@ if "selected_image_keys" not in st.session_state:
 if "selected_image_meta" not in st.session_state:
     st.session_state["selected_image_meta"] = []
 
-if "selected_imgs_group_id" not in st.session_state:
-    st.session_state["selected_imgs_group_id"] = None
+if "episode_no" not in st.session_state:          # 실제로 들고 다닐 에피소드 번호
+    st.session_state["episode_no"] = None
 
-if "episode_title" not in st.session_state:
-    st.session_state["episode_title"] = ""
+if "episode_no_input" not in st.session_state:    # 위젯용 임시값
+    st.session_state["episode_no_input"] = 1
+
+if "episode_title_key" not in st.session_state:
+    st.session_state["episode_title_key"] = "episode_title"
 
 
 # ---------- 1) UI 공통 적용 ----------
@@ -60,25 +63,36 @@ if hasattr(storage, "bucket"):
     st.caption(f"Bucket: **{getattr(storage, 'bucket', None)}**")
 
 # ---------- 4) 입력 UI ----------
+# 현재 저장된 episode_no가 있으면 그걸 기본값으로 사용
+# default_episode = st.session_state.get("episode_no") or 1
+
 imgs_id = st.number_input(
-    "IMGS ID (에피소드 번호)",
+    "에피소드 번호",
     min_value=1,
     step=1,
-    key="selected_imgs_group_id",   # ✅ 세션 키에 바인딩
+    # value=default_episode,     # 🔹 기본값
+    key="episode_no_input", 
 )
 
 episode_title = st.text_input(
     "에피소드 제목",
-    key="episode_title",
+    key=st.session_state["episode_title_key"],
     placeholder="예: 한강 나들이, 부산 2박 3일 여행",
 )
 
+# ✅ 업로드 가능 여부: 번호 있고, 제목이 공백이 아닐 때만 True
+upload_ready = bool(imgs_id) and bool(episode_title.strip())
+
 files = st.file_uploader(
-    "사진 업로드",
+    "이미지 업로드",
     type=["jpg","jpeg","png","heic","heif"],
     accept_multiple_files=True,
-    key="upload_files",             # ✅ 세션 키에 바인딩
+    key=st.session_state.get("upload_files_key", "upload_files"),            # ✅ 세션 키에 바인딩
+    disabled=not upload_ready,
 )
+
+if not upload_ready:
+    st.caption("먼저 에피소드 번호와 제목을 입력해 주세요.")
 
 from PIL import ExifTags
 
@@ -166,7 +180,7 @@ def extract_gps_datetime(img: Image.Image):
 
 
 # ---------- 6) 업로드 처리 ----------
-if files and imgs_id:
+if files and upload_ready:
     uploaded_keys = []
     meta_pack = []   # 지도 페이지에서 바로 쓰려는 간단 메타: [{key, lon, lat, taken_at}, ...]
 
@@ -248,9 +262,11 @@ if files and imgs_id:
         st.session_state["selected_image_keys"] = uploaded_keys
         st.session_state["selected_image_meta"] = meta_pack
 
-        episode_no = int(imgs_id)
-        title = st.session_state.get("episode_title") or None
 
+        episode_no = int(imgs_id)
+        st.session_state["episode_no"] = episode_no   # 🔹 여기서만 저장
+        
+        title = episode_title.strip() or None
         upsert_episode_for_upload(user_id, episode_no, title=title)
         refresh_episode_meta(user_id, episode_no)
 
@@ -263,7 +279,7 @@ if files and imgs_id:
 # ---------- 8) 현재 세션에 저장된 에피소드 정보 보여주기 ----------
 saved_keys = st.session_state.get("selected_image_keys", [])
 saved_meta = st.session_state.get("selected_image_meta", [])
-saved_group = st.session_state.get("selected_imgs_group_id", None)
+saved_group = st.session_state.get("episode_no", None)
 
 if saved_keys:
     st.success(
@@ -286,6 +302,17 @@ if st.button("🆕 새로운 에피소드 올리기"):
     # 이전 에피소드 관련 상태 싹 정리
     st.session_state["selected_image_keys"] = []
     st.session_state["selected_image_meta"] = []
+    # st.session_state["upload_files"] = None   
+
+    # 🔥 파일 업로더 초기화 방법 → 업로드 위젯의 key를 교체
+    st.session_state["upload_files_key"] = str(uuid.uuid4())
+
+    # 🔥 episode_title도 key를 변경하여 초기화
+    st.session_state["episode_title_key"] = "episode_title_" + str(uuid.uuid4())
 
     st.success("새로운 에피소드 업로드를 시작할 준비가 되었습니다.")
     st.rerun()
+
+
+saved_group = st.session_state.get("episode_no", None)
+st.write("DEBUG episode_no:", saved_group)

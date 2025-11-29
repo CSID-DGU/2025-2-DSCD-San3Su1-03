@@ -15,6 +15,7 @@ def apply_ui():
 apply_ui() 
 
 st.title("📸 AI 여행일기 생성")
+# st.write("DEBUG episode_no:", st.session_state.get("episode_no"))
 
 # Upload 페이지에서 선택한 s3 키들을 세션으로 전달
 keys = st.session_state.get("selected_image_keys", [])
@@ -28,7 +29,7 @@ st.write(f"선택된 이미지 개수: {len(keys)}")
 
 # ✅ 여기서 클라이언트 생성
 client = get_openai_client()
-episode_no = st.session_state.get("selected_imgs_group_id")
+episode_no = st.session_state.get("episode_no")
 user_id = st.session_state["auth"]["user_id"]  # 인증 가드가 있다고 가정
 
 # 기본값 세팅
@@ -41,7 +42,7 @@ if "diary" not in st.session_state:
 # --- 유저 입력 ---
 platform = st.selectbox("플랫폼을 선택해주세요", ["Instagram", "Blog", "X(Twitter)"])
 mood = st.selectbox("일기의 분위기를 선택해주세요", ["잔잔하고 감성적이게","밝고 명랑하게","모험적이고 활기차게","차분하고 사색적이게","사실 중심으로 담백하게"])
-include_elements = st.text_input("포함되기 원하는 키워드를 입력해주세요", placeholder = "예시: 추억, 낭만, 여운")
+include_elements = st.text_input("포함되기 원하는 키워드를 입력해주세요", placeholder = "예시: 추억, 낭만, 힐링")
 language = st.selectbox("언어", ["Korean", "English"])
 
 if st.button("✏️ 여행일기 생성하기"):
@@ -96,13 +97,16 @@ if diary:
         st.caption("해시태그 정보가 없습니다.")
 
     
-    if episode_no and st.button("이 일기 저장하기"):
-        insert_episode_diary(
-            user_id=user_id,
-            episode_no=int(episode_no),
-            mood=mood,
-            title=diary.get("title", "(제목 없음)"),
-            content=diary.get("content", ""),
-            tags=", ".join(hashtags) if hashtags else None,
-        )
-        st.success("마이페이지에 이 일기를 저장했습니다 ✅")
+    if st.button("이 일기 저장하기"):
+        if episode_no is None:
+            st.error("에피소드 번호가 없어 일기를 저장할 수 없습니다. 먼저 이미지 업로드 페이지에서 에피소드를 선택해 주세요.")
+        else:
+            insert_episode_diary(
+                user_id=user_id,
+                episode_no=int(episode_no),
+                mood=mood,
+                title=diary.get("title", "(제목 없음)"),
+                content=diary.get("content", ""),
+                tags=", ".join(hashtags) if hashtags else None,
+            )
+            st.success("마이페이지에 이 일기를 저장했습니다 ✅")

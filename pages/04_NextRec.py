@@ -19,7 +19,7 @@ def apply_ui():
 
 apply_ui() 
 
-st.title("📍 다음 장소 추천 받기 (S3 이미지 → 라벨링 → 추천)")
+st.title("📍 업로드 사진기반 다음 장소 추천")
 
 # Upload 페이지에서 선택한 S3 key들
 keys = st.session_state.get("selected_image_keys", [])
@@ -377,7 +377,7 @@ st.write(f"선택된 이미지 개수: {len(keys)}")
 
 storage = get_storage()  # S3Storage
 
-if st.button("다음 장소 추천받기"):
+if st.button("장소 추천 확인하기"):
     conn = get_conn()
     cur = conn.cursor()
 
