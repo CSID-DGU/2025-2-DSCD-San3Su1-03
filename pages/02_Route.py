@@ -180,26 +180,44 @@ with left:
     st.markdown(f"- **현재 범위 내 사진 수**: `{len(df_show)}`")
 
     if pd.notna(min_dt):
-        st.markdown(f"- **시작 시각**: `{min_dt}`")
+        st.markdown(f"- **시작 시각**:\n\n  `{min_dt}`")
+
     if pd.notna(max_dt):
-        st.markdown(f"- **종료 시각**: `{max_dt}`")
+        st.markdown(f"- **종료 시각**:\n\n  `{max_dt}`")
 
     st.caption("시간 범위를 줄이면 이동 경로를 더 세밀하게 볼 수 있어요.")
 
 
 with right:
     st.subheader("이동 경로 지도", divider="gray")
+    
+    # 0) 처음 들어왔을 때만 기본 중심/줌 세팅
+    if "route_map_center" not in st.session_state:
+        st.session_state["route_map_center"] = [
+            float(df_show["lat"].mean()),
+            float(df_show["lon"].mean())
+        ]
+    if "route_map_zoom" not in st.session_state:
+        st.session_state["route_map_zoom"] = 13
 
-    # ---------- 지도 중심 계산 ----------
-    center = [
-        float(df_show["lat"].mean()),
-        float(df_show["lon"].mean())
-    ]
+    # 1) 줌 슬라이더 (무조건 세션 값 사용)
+    zoom_level = st.slider(
+        "지도 확대 수준",
+        min_value=8,
+        max_value=18,
+        value=st.session_state["route_map_zoom"],  # ✅
+        step=1,
+        help="지도를 얼마나 확대해서 볼지 선택하세요.",
+        key="route_zoom_level",
+    )
+
+    # 2) 중심도 세션 값만 사용
+    center = st.session_state["route_map_center"]
 
     # folium 지도 생성
     m = folium.Map(
         location=center,
-        zoom_start=13,
+        zoom_start=zoom_level,
         tiles="OpenStreetMap",
         control_scale=True,
         max_zoom=18,
@@ -210,17 +228,16 @@ with right:
     if coords:
         folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
 
-    # ---------- FeatureGroup: 마커를 한 번에 렌더 ----------
+    # ---------- 마커들 ----------
     marker_group = folium.FeatureGroup(name="markers")
-
     N = len(df_show)
+
     for i, r in df_show.reset_index(drop=True).iterrows():
         lat, lon = float(r["lat"]), float(r["lon"])
         time_val = r["taken_at_utc"]
         addr_txt = pretty_addr(r.get("addr_json"))
         img_url = preview_url(r["key"])
 
-        # Tooltip (사진 + 시간 + 주소 + lat/lon)
         parts = []
         if img_url:
             parts.append(
@@ -236,7 +253,6 @@ with right:
 
         tooltip = folium.Tooltip("".join(parts), sticky=True)
 
-        # 아이콘 구분
         if i == 0:
             icon = folium.Icon(color="green", icon="play", prefix="fa")
         elif i == N - 1:
@@ -244,7 +260,6 @@ with right:
         else:
             icon = folium.Icon(color="red", icon="map-marker", prefix="fa")
 
-        # Marker → FeatureGroup에만 추가
         folium.Marker(
             [lat, lon],
             tooltip=tooltip,
@@ -255,25 +270,41 @@ with right:
     marker_group.add_to(m)
 
     # ---------- 전체 좌표 기준으로 자동 zoom 조정 ----------
-    if coords:
-        lats = [c[0] for c in coords]
-        lons = [c[1] for c in coords]
+    # if coords:
+    #     lats = [c[0] for c in coords]
+    #     lons = [c[1] for c in coords]
 
-        padding = 0.005
-        min_lat, max_lat = min(lats) - padding, max(lats) + padding
-        min_lon, max_lon = min(lons) - padding, max(lons) + padding
-        bounds = [[min_lat, min_lon], [max_lat, max_lon]]
+    #     padding = 0.005
+    #     min_lat, max_lat = min(lats) - padding, max(lats) + padding
+    #     min_lon, max_lon = min(lons) - padding, max(lons) + padding
+    #     bounds = [[min_lat, min_lon], [max_lat, max_lon]]
 
-        # 마커가 항상 한 화면에 들어오도록
-        m.fit_bounds(bounds, max_zoom=13)
+    #     # 마커가 항상 한 화면에 들어오도록
+    #     m.fit_bounds(bounds, max_zoom=13)
+
 
     # ---------- 지도 렌더링 ----------
-    st_folium(
+    map_state = st_folium(
         m,
         width=None,
         height=620,
         key=f"route_map_{user_id}",
     )
 
-    st.caption(f"표시된 사진 수(현재 범위): {len(df_show)} / 전체 유효 좌표 사진 수: {len(df)}")
+    # 👉 사용자가 움직인 중심/줌을 세션에 저장
+    if map_state is not None:
+        center_info = map_state.get("center")
+        if center_info:
+            st.session_state["route_map_center"] = [
+                center_info.get("lat"),
+                center_info.get("lng"),
+            ]
+        zoom_info = map_state.get("zoom")
+        if zoom_info is not None:
+            st.session_state["route_map_zoom"] = zoom_info
+
+    st.caption(
+        f"표시된 사진 수(현재 범위): {len(df_show)} / "
+        f"전체 유효 좌표 사진 수: {len(df)}"
+    )
 
