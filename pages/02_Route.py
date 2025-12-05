@@ -7,6 +7,7 @@ from sqlalchemy import text
 import folium
 from streamlit_folium import st_folium
 from folium import Tooltip
+from folium.plugins import MarkerCluster 
 
 # ---------- 0) 인증 가드 ----------
 auth = st.session_state.get("auth")
@@ -190,15 +191,24 @@ with left:
 
 with right:
     st.subheader("이동 경로 지도", divider="gray")
-    
+
     # 0) 처음 들어왔을 때만 기본 중심/줌 세팅
     if "route_map_center" not in st.session_state:
-        st.session_state["route_map_center"] = [
-            float(df_show["lat"].mean()),
-            float(df_show["lon"].mean())
-        ]
+        # 맨 위/아래, 왼쪽/오른쪽 극값
+        min_lat = float(df_show["lat"].min())
+        max_lat = float(df_show["lat"].max())
+        min_lon = float(df_show["lon"].min())
+        max_lon = float(df_show["lon"].max())
+
+        # bounding box 중앙값
+        center_lat = (min_lat + max_lat) / 2.0
+        center_lon = (min_lon + max_lon) / 2.0
+
+        st.session_state["route_map_center"] = [center_lat, center_lon]
+
     if "route_map_zoom" not in st.session_state:
         st.session_state["route_map_zoom"] = 13
+
 
     # 1) 줌 슬라이더 (무조건 세션 값 사용)
     zoom_level = st.slider(
@@ -223,13 +233,21 @@ with right:
         max_zoom=18,
     )
 
+    # 🔹 서로 가까운 지점만 클러스터링
+    cluster = MarkerCluster(
+        options={
+            "maxClusterRadius": 20,          # 픽셀 단위 클러스터 반경 (줄일수록 더 가까운 것만 묶임)
+            "spiderfyOnMaxZoom": True,       # 클러스터 클릭 시 퍼져서 보이게
+            "disableClusteringAtZoom": 18    # 18 이상 확대 시 개별 마커로 풀기
+        }
+    ).add_to(m)    
+
     # ---------- 경로 PolyLine ----------
     coords = df_show[["lat", "lon"]].to_numpy().tolist()
     if coords:
         folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
 
-    # ---------- 마커들 ----------
-    marker_group = folium.FeatureGroup(name="markers")
+    # ---------- 마커들 (클러스터링) ----------
     N = len(df_show)
 
     for i, r in df_show.reset_index(drop=True).iterrows():
@@ -254,20 +272,17 @@ with right:
         tooltip = folium.Tooltip("".join(parts), sticky=True)
 
         if i == 0:
-            icon = folium.Icon(color="green", icon="play", prefix="fa")
+            icon = folium.Icon(color="green", icon="play", prefix="fa")       # 시작
         elif i == N - 1:
-            icon = folium.Icon(color="darkred", icon="flag", prefix="fa")
+            icon = folium.Icon(color="darkred", icon="flag", prefix="fa")     # 종료
         else:
-            icon = folium.Icon(color="red", icon="map-marker", prefix="fa")
+            icon = folium.Icon(color="red", icon="map-marker", prefix="fa")   # 중간
 
         folium.Marker(
             [lat, lon],
             tooltip=tooltip,
             icon=icon,
-        ).add_to(marker_group)
-
-    # FeatureGroup을 지도에 추가
-    marker_group.add_to(m)
+        ).add_to(cluster)   # ★ 여기만 cluster 에 추가
 
     # ---------- 전체 좌표 기준으로 자동 zoom 조정 ----------
     # if coords:
