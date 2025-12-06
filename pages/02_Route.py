@@ -1,13 +1,11 @@
-# pages/02_Route.py
-import os, sys, json, math, time
+# pages/02_Route_re.py
+# CSV 기반 지도 시각화 (실험 버전)
+import os, sys
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-from sqlalchemy import text
 import folium
 from streamlit_folium import st_folium
-from folium import Tooltip
-from folium.plugins import MarkerCluster 
+from folium.plugins import MarkerCluster
 
 # ---------- 0) 인증 가드 ----------
 auth = st.session_state.get("auth")
@@ -27,95 +25,118 @@ def apply_ui():
 
 apply_ui()
 
-# ---------- 2) 모듈 경로/의존 ----------
+# ---------- 2) 모듈 경로 ----------
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from core.db import get_engine, fetch_photos_by_keys, fetch_photos_by_group_prefix
 from core.storage import get_storage
+from core.db import fetch_episodes_for_user
 
 st.title("지도 시각화")
 
-# ---------- 3) 세션의 에피소드/사진 키 확인 ----------
-keys = st.session_state.get("selected_image_keys", [])
-group_id = st.session_state.get("selected_imgs_group_id")
+# ---------- 3) CSV 파일 확인 ----------
+csv_path = st.session_state.get("route_csv_path")
+episode_no = st.session_state.get("episode_no")
 
-if not keys and not group_id:
+# CSV 디렉토리에서 현재 유저의 파일 목록 가져오기
+csv_dir = os.path.join(os.path.dirname(__file__), "..", "data", "route_csv")
+available_csvs = []
+
+if os.path.exists(csv_dir):
+    for f in os.listdir(csv_dir):
+        if f.startswith(f"episode_{user_id}_") and f.endswith(".csv"):
+            available_csvs.append(f)
+
+if not available_csvs and not csv_path:
     st.info("먼저 업로드 페이지에서 이미지를 업로드해주세요.")
-    time.sleep(1)
-    st.switch_page("pages/00_Upload.py")
     st.stop()
 
-# ---------- 4) 데이터 로드 (캐싱) ----------
-@st.cache_data(show_spinner=True)
-def load_df_cached(user_id: str, keys_tup, group_id_val):
-    """
-    photos + (LEFT JOIN) photo_addresses 를 읽어와서
-    - lat/lon 유효값만 남기고
-    - 시간순으로 정렬한 DataFrame 반환
-    """
-    from core.db import get_engine, fetch_photos_by_keys, fetch_photos_by_group_prefix
+# ---------- 4) CSV 선택 UI ----------
+st.subheader("에피소드 선택", divider="gray")
 
-    eng = get_engine()
+# DB에서 에피소드 정보 가져오기
+episodes_rows = fetch_episodes_for_user(user_id)
+episodes_map = {}  # episode_no -> {title, started_at, ended_at, photo_count}
+for row in episodes_rows:
+    episodes_map[row["episode_no"]] = {
+        "title": row.get("title") or "(제목 없음)",
+        "started_at": row.get("started_at"),
+        "ended_at": row.get("ended_at"),
+        "photo_count": row.get("photo_count") or 0,
+    }
 
-    if keys_tup:
-        rows = fetch_photos_by_keys(user_id, list(keys_tup))
-    elif group_id_val is not None:
-        rows = fetch_photos_by_group_prefix(user_id, int(group_id_val))
+def format_episode_label(csv_filename: str) -> str:
+    """CSV 파일명에서 에피소드 번호 추출 후, DB 정보로 포맷팅"""
+    # episode_{user_id}_{episode_no}.csv 형태에서 episode_no 추출
+    try:
+        base = csv_filename.replace(f"episode_{user_id}_", "").replace(".csv", "")
+        ep_no = int(base)
+    except ValueError:
+        return csv_filename  # 파싱 실패 시 원본 반환
+
+    info = episodes_map.get(ep_no)
+    if not info:
+        return f"[{ep_no}] (정보 없음)"
+
+    title = info["title"]
+    cnt = info["photo_count"]
+
+    # 기간 포맷팅
+    s = info["started_at"]
+    e = info["ended_at"]
+    if s and e:
+        try:
+            s_str = s.strftime("%Y-%m-%d")
+            e_str = e.strftime("%Y-%m-%d")
+            date_range = f"{s_str} ~ {e_str}" if s_str != e_str else s_str
+        except Exception:
+            date_range = "-"
+    elif s:
+        try:
+            date_range = s.strftime("%Y-%m-%d")
+        except Exception:
+            date_range = "-"
     else:
-        return pd.DataFrame(columns=[
-            "id", "key", "bucket", "content_type", "size",
-            "taken_at_utc", "lat", "lon", "addr_json"
-        ])
+        date_range = "-"
 
-    if not rows:
-        return pd.DataFrame(columns=[
-            "id", "key", "bucket", "content_type", "size",
-            "taken_at_utc", "lat", "lon", "addr_json"
-        ])
+    return f"[{ep_no}] {title} | {date_range} | {cnt}장"
 
-    pids = [r["id"] for r in rows]
-    df = pd.DataFrame(rows)
+# 현재 세션의 CSV가 있으면 기본 선택
+default_idx = 0
+if csv_path and os.path.basename(csv_path) in available_csvs:
+    default_idx = available_csvs.index(os.path.basename(csv_path))
 
-    # JOIN 주소 캐시
-    with eng.connect() as conn:
-        addr = conn.execute(
-            text("SELECT photo_id, addr_json FROM photo_addresses WHERE photo_id = ANY(:ids)"),
-            {"ids": pids}
-        ).mappings().all()
+selected_csv = st.selectbox(
+    "열어볼 에피소드를 선택하세요:",
+    options=available_csvs,
+    index=default_idx,
+    format_func=format_episode_label,
+)
 
-    adf = pd.DataFrame(addr) if addr else pd.DataFrame(columns=["photo_id", "addr_json"])
-    df = df.merge(adf, left_on="id", right_on="photo_id", how="left")
-    df.drop(columns=["photo_id"], inplace=True, errors="ignore")
+if not selected_csv:
+    st.warning("선택할 CSV 파일이 없습니다.")
+    st.stop()
 
-    # addr_json NaN/None 정리
-    if "addr_json" in df.columns:
-        def _fix(v):
-            if v is None:
-                return None
-            if isinstance(v, float) and math.isnan(v):
-                return None
-            return v
-        df["addr_json"] = df["addr_json"].map(_fix)
+# ---------- 5) CSV 로드 ----------
+csv_full_path = os.path.join(csv_dir, selected_csv)
 
-    # 타입 정리
-    df["taken_at_utc"] = pd.to_datetime(df["taken_at_utc"], errors="coerce")
+@st.cache_data(show_spinner=True)
+def load_csv(path):
+    df = pd.read_csv(path)
     df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
     df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
-
+    df["taken_at"] = pd.to_datetime(df["taken_at"], errors="coerce")
     # 유효 좌표만 + 시간순 정렬
     df = df.dropna(subset=["lat", "lon"])
-    df = df.sort_values(["taken_at_utc", "id"], na_position="last").reset_index(drop=True)
+    df = df.sort_values(["taken_at"], na_position="last").reset_index(drop=True)
     return df
 
-# keys 를 튜플로 변환해서 캐시 키로 사용
-keys_tup = tuple(keys) if keys else None
-df = load_df_cached(user_id, keys_tup, group_id)
+df = load_csv(csv_full_path)
 
 if df.empty:
-    st.info("표시할 좌표가 있는 사진이 없어요. EXIF 위치가 있는 사진으로 올려보세요.")
+    st.info("표시할 좌표가 있는 사진이 없어요.")
     st.stop()
 
-# ---------- 5) 시간 범위 필터 ----------
-min_dt, max_dt = df["taken_at_utc"].min(), df["taken_at_utc"].max()
+# ---------- 6) 시간 범위 필터 ----------
+min_dt, max_dt = df["taken_at"].min(), df["taken_at"].max()
 
 with st.container():
     if pd.notna(min_dt) and pd.notna(max_dt) and min_dt != max_dt:
@@ -124,11 +145,11 @@ with st.container():
             min_value=min_dt.to_pydatetime(),
             max_value=max_dt.to_pydatetime(),
             value=(min_dt.to_pydatetime(), max_dt.to_pydatetime()),
-            help="슬라이더를 움직여서 지도에 표시할 사진의 시간 범위를 선택하세요.",
+            key="csv_route_time_range",
         )
         df_show = df[
-            (df["taken_at_utc"] >= rng[0]) &
-            (df["taken_at_utc"] <= rng[1])
+            (df["taken_at"] >= rng[0]) &
+            (df["taken_at"] <= rng[1])
         ].copy()
     else:
         df_show = df.copy()
@@ -137,7 +158,7 @@ if df_show.empty:
     st.warning("선택한 범위에 표시할 사진이 없습니다.")
     st.stop()
 
-# ---------- 6) 미리보기 URL 준비 ----------
+# ---------- 7) 스토리지 (이미지 URL용) ----------
 storage = get_storage()
 
 def preview_url(key: str) -> str | None:
@@ -146,37 +167,11 @@ def preview_url(key: str) -> str | None:
     except Exception:
         return None
 
-# ---------- 7) 주소 문자열 유틸 ----------
-def pretty_addr(addr_json):
-    # 결측/NaN 가드
-    if addr_json is None:
-        return None
-    if isinstance(addr_json, float) and math.isnan(addr_json):
-        return None
-
-    # bytes → str
-    if isinstance(addr_json, (bytes, bytearray)):
-        addr_json = addr_json.decode("utf-8", errors="ignore")
-
-    # str → dict
-    if isinstance(addr_json, str):
-        try:
-            addr_json = json.loads(addr_json)
-        except Exception:
-            return None
-
-    if not isinstance(addr_json, dict):
-        return None
-
-    return (addr_json.get("road_address")
-            or addr_json.get("address_name")
-            or None)
-
-# ---------- 8) 레이아웃: 왼쪽 필터/정보, 오른쪽 지도 ----------
+# ---------- 8) 레이아웃 ----------
 left, right = st.columns([1, 2])
 
 with left:
-    st.subheader("정보 / 필터", divider="gray")
+    st.subheader("정보", divider="gray")
     st.markdown(f"- **전체 사진 수(좌표 O)**: `{len(df)}`")
     st.markdown(f"- **현재 범위 내 사진 수**: `{len(df_show)}`")
 
@@ -186,75 +181,53 @@ with left:
     if pd.notna(max_dt):
         st.markdown(f"- **종료 시각**:\n\n  `{max_dt}`")
 
-    st.caption("시간 범위를 줄이면 이동 경로를 더 세밀하게 볼 수 있어요.")
-
-
 with right:
     st.subheader("이동 경로 지도", divider="gray")
 
-    # 0) 처음 들어왔을 때만 기본 중심/줌 세팅
-    if "route_map_center" not in st.session_state:
-        # 맨 위/아래, 왼쪽/오른쪽 극값
-        min_lat = float(df_show["lat"].min())
-        max_lat = float(df_show["lat"].max())
-        min_lon = float(df_show["lon"].min())
-        max_lon = float(df_show["lon"].max())
-
-        # bounding box 중앙값
-        center_lat = (min_lat + max_lat) / 2.0
-        center_lon = (min_lon + max_lon) / 2.0
-
-        st.session_state["route_map_center"] = [center_lat, center_lon]
-
-    if "route_map_zoom" not in st.session_state:
-        st.session_state["route_map_zoom"] = 13
-
-
-    # 1) 줌 슬라이더 (무조건 세션 값 사용)
-    zoom_level = st.slider(
-        "지도 확대 수준",
-        min_value=8,
-        max_value=18,
-        value=st.session_state["route_map_zoom"],  # ✅
-        step=1,
-        help="지도를 얼마나 확대해서 볼지 선택하세요.",
-        key="route_zoom_level",
-    )
-
-    # 2) 중심도 세션 값만 사용
-    center = st.session_state["route_map_center"]
+    # 지도 중심 계산 (데이터 기반)
+    min_lat = float(df_show["lat"].min())
+    max_lat = float(df_show["lat"].max())
+    min_lon = float(df_show["lon"].min())
+    max_lon = float(df_show["lon"].max())
+    center = [(min_lat + max_lat) / 2.0, (min_lon + max_lon) / 2.0]
 
     # folium 지도 생성
     m = folium.Map(
         location=center,
-        zoom_start=zoom_level,
+        zoom_start=13,
         tiles="OpenStreetMap",
         control_scale=True,
         max_zoom=18,
     )
 
-    # 🔹 서로 가까운 지점만 클러스터링
+    # 클러스터링
     cluster = MarkerCluster(
         options={
-            "maxClusterRadius": 20,          # 픽셀 단위 클러스터 반경 (줄일수록 더 가까운 것만 묶임)
-            "spiderfyOnMaxZoom": True,       # 클러스터 클릭 시 퍼져서 보이게
-            "disableClusteringAtZoom": 18    # 18 이상 확대 시 개별 마커로 풀기
+            "maxClusterRadius": 20,
+            "spiderfyOnMaxZoom": True,
+            "disableClusteringAtZoom": 18
         }
-    ).add_to(m)    
+    ).add_to(m)
 
-    # ---------- 경로 PolyLine ----------
+    # 경로 PolyLine
     coords = df_show[["lat", "lon"]].to_numpy().tolist()
     if coords:
         folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
 
-    # ---------- 마커들 (클러스터링) ----------
+    # 마커들
     N = len(df_show)
 
     for i, r in df_show.reset_index(drop=True).iterrows():
         lat, lon = float(r["lat"]), float(r["lon"])
-        time_val = r["taken_at_utc"]
-        addr_txt = pretty_addr(r.get("addr_json"))
-        img_url = preview_url(r["key"])
+        time_val = r["taken_at"]
+
+        # preview_url 컬럼이 있으면 사용, 없으면 key로 생성
+        if "preview_url" in r and pd.notna(r["preview_url"]):
+            img_url = r["preview_url"]
+        elif "key" in r and pd.notna(r["key"]):
+            img_url = preview_url(r["key"])
+        else:
+            img_url = None
 
         parts = []
         if img_url:
@@ -265,61 +238,32 @@ with right:
             )
         if pd.notna(time_val):
             parts.append(f"<b>{time_val:%Y-%m-%d %H:%M:%S}</b><br>")
-        if addr_txt:
-            parts.append(f"{addr_txt}<br>")
         parts.append(f"({lat:.5f}, {lon:.5f})")
 
         tooltip = folium.Tooltip("".join(parts), sticky=True)
 
         if i == 0:
-            icon = folium.Icon(color="green", icon="play", prefix="fa")       # 시작
+            icon = folium.Icon(color="green", icon="play", prefix="fa")
         elif i == N - 1:
-            icon = folium.Icon(color="darkred", icon="flag", prefix="fa")     # 종료
+            icon = folium.Icon(color="darkred", icon="flag", prefix="fa")
         else:
-            icon = folium.Icon(color="red", icon="map-marker", prefix="fa")   # 중간
+            icon = folium.Icon(color="red", icon="map-marker", prefix="fa")
 
         folium.Marker(
             [lat, lon],
             tooltip=tooltip,
             icon=icon,
-        ).add_to(cluster)   # ★ 여기만 cluster 에 추가
+        ).add_to(cluster)
 
-    # ---------- 전체 좌표 기준으로 자동 zoom 조정 ----------
-    # if coords:
-    #     lats = [c[0] for c in coords]
-    #     lons = [c[1] for c in coords]
-
-    #     padding = 0.005
-    #     min_lat, max_lat = min(lats) - padding, max(lats) + padding
-    #     min_lon, max_lon = min(lons) - padding, max(lons) + padding
-    #     bounds = [[min_lat, min_lon], [max_lat, max_lon]]
-
-    #     # 마커가 항상 한 화면에 들어오도록
-    #     m.fit_bounds(bounds, max_zoom=13)
-
-
-    # ---------- 지도 렌더링 ----------
-    map_state = st_folium(
+    # 지도 렌더링
+    st_folium(
         m,
         width=None,
         height=620,
-        key=f"route_map_{user_id}",
+        key=f"csv_route_map_{user_id}",
     )
-
-    # 👉 사용자가 움직인 중심/줌을 세션에 저장
-    if map_state is not None:
-        center_info = map_state.get("center")
-        if center_info:
-            st.session_state["route_map_center"] = [
-                center_info.get("lat"),
-                center_info.get("lng"),
-            ]
-        zoom_info = map_state.get("zoom")
-        if zoom_info is not None:
-            st.session_state["route_map_zoom"] = zoom_info
 
     st.caption(
         f"표시된 사진 수(현재 범위): {len(df_show)} / "
         f"전체 유효 좌표 사진 수: {len(df)}"
     )
-

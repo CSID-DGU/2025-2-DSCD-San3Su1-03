@@ -2,8 +2,6 @@
 import os, sys, time
 import streamlit as st
 import pandas as pd
-import folium
-from streamlit_folium import st_folium
 from datetime import datetime
 
 # ---------- 0) 인증 가드 ----------
@@ -81,9 +79,19 @@ def format_episode(row):
 
 episode_options = list(episodes_df.index)
 
+# 현재 세션의 에피소드가 있으면 해당 에피소드를 기본 선택
+current_episode_no = st.session_state.get("episode_no")
+default_idx = 0
+if current_episode_no is not None:
+    # episode_no가 일치하는 행의 index 찾기
+    matched = episodes_df[episodes_df["episode_no"] == current_episode_no]
+    if not matched.empty:
+        default_idx = episode_options.index(matched.index[0])
+
 selected_idx = st.selectbox(
     "열어볼 에피소드를 선택하세요:",
     options=episode_options,
+    index=default_idx,
     format_func=lambda i: format_episode(episodes_df.loc[i]),
 )
 
@@ -147,107 +155,6 @@ with right:
         st.write(f"**시작 시각:** `{started_at}`")
 
     st.write(f"**사진 수:** `{selected.get('photo_count') or 0}` 장")
-
-    # --- 이동 경로 지도 ---
-    st.subheader("이동 경로 지도", divider="gray")
-
-    if photos_df.empty:
-        st.info("이 에피소드에는 위치 정보가 있는 사진이 없어요.")
-    else:
-        # lat/lon/timestamp 정리
-        df_map = photos_df.copy()
-        df_map["lat"] = pd.to_numeric(df_map["lat"], errors="coerce")
-        df_map["lon"] = pd.to_numeric(df_map["lon"], errors="coerce")
-        df_map["taken_at_utc"] = pd.to_datetime(df_map.get("taken_at_utc"), errors="coerce")
-
-        df_map = df_map.dropna(subset=["lat", "lon"])
-        if df_map.empty:
-            st.info("위치 정보가 있는 사진이 없습니다.")
-        else:
-            # 중심 & 전체 좌표
-            df_map = df_map.sort_values(["taken_at_utc", "id"],
-                                        na_position="last").reset_index(drop=True)
-            coords = df_map[["lat", "lon"]].to_numpy().tolist()
-            center = [float(df_map["lat"].mean()), float(df_map["lon"].mean())]
-
-            # 지도 생성
-            m = folium.Map(
-                location=center,
-                zoom_start=13,
-                tiles="OpenStreetMap",
-                control_scale=True,
-                max_zoom=18,
-            )
-
-            # 경로 라인 추가
-            if coords:
-                folium.PolyLine(coords, color="blue", weight=3, opacity=0.6).add_to(m)
-
-            # 🔥 마커들을 모아두는 FeatureGroup 생성 (핵심 포인트)
-            marker_group = folium.FeatureGroup(name="markers")
-
-            N = len(df_map)
-            for i, r in df_map.iterrows():
-                lat, lon = float(r["lat"]), float(r["lon"])
-                t = r["taken_at_utc"]
-
-                # S3 이미지 URL
-                try:
-                    img_url = storage.url(r["key"])
-                except Exception:
-                    img_url = None
-
-                # 촬영 시각 문자열
-                time_str = f"{t:%Y-%m-%d %H:%M}" if pd.notna(t) else ""
-
-                # Tooltip HTML
-                if img_url:
-                    tooltip_html = (
-                        "<div style='width:200px;border:1px solid #ddd;"
-                        "background-color:white;padding:4px;border-radius:6px;'>"
-                        f"<img src='{img_url}' "
-                        "style='width:100%;border-radius:4px;margin-bottom:4px;'>"
-                        f"<div style='font-size:11px;color:#333;'>{time_str}</div>"
-                        "</div>"
-                    )
-                else:
-                    tooltip_html = time_str or "photo"
-
-                tooltip = folium.Tooltip(tooltip_html, sticky=True)
-
-                # 아이콘
-                if i == 0:
-                    icon = folium.Icon(color="green", icon="play", prefix="fa")
-                elif i == N - 1:
-                    icon = folium.Icon(color="darkred", icon="flag", prefix="fa")
-                else:
-                    icon = folium.Icon(color="red", icon="map-marker", prefix="fa")
-
-                # 🔥 Marker를 직접 m에 add하지 않고 marker_group에만 add
-                folium.Marker(
-                    [lat, lon],
-                    icon=icon,
-                    tooltip=tooltip,
-                ).add_to(marker_group)
-
-            # 그룹을 맵에 한 번에 추가
-            marker_group.add_to(m)
-
-            # 🔹 모든 마커가 한 화면에 들어오도록 zoom 조정
-            if coords:
-                lats = [c[0] for c in coords]
-                lons = [c[1] for c in coords]
-
-                padding = 0.005
-                min_lat, max_lat = min(lats) - padding, max(lats) + padding
-                min_lon, max_lon = min(lons) - padding, max(lons) + padding
-                bounds = [[min_lat, min_lon], [max_lat, max_lon]]
-
-                m.fit_bounds(bounds, max_zoom=13)
-
-            # 지도 렌더링
-            st_folium(m, width=None, height=520, key=f"mypage_map_{episode_no}")
-    
 
     # --- 저장된 AI 일기 목록 ---
     st.markdown("### 저장된 AI 일기")

@@ -5,7 +5,7 @@ import streamlit as st
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-@st.cache_resource
+@st.cache_resource(show_spinner="📍 장소를 추천 중입니다... 조금만 기다려 주세요!")
 def load_openclip_model():
     model, _, preprocess = open_clip.create_model_and_transforms(
         "ViT-g-14",

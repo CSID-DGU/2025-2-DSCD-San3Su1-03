@@ -386,7 +386,7 @@ if st.button("장소 추천 확인하기"):
         label_triplets: list[list[int]] = []   # 사진별 top3 label_id 저장
 
         # 1) 선택된 이미지들 라벨링 + photo_label 저장
-        with st.spinner("📷 이미지 라벨링 및 DB 저장 중..."):
+        with st.spinner("📷 사진을 분석하고 있어요... 잠시만 기다려 주세요!"):
             for key in keys:
                 # photos 테이블에서 PK(id) 찾기
                 photo_id = get_photo_id_by_s3key(cur, key)
@@ -431,7 +431,7 @@ if st.button("장소 추천 확인하기"):
         strong_ids: set[int] = set()   # 라벨 3개 모두 매치된 place_id들
         medium_ids: set[int] = set()   # 3개 매치는 없고, 2개 매치된 place_id들
 
-        with st.spinner("📌 라벨 매칭 기반 추천 장소 탐색 중..."):
+        with st.spinner("📍 장소를 추천 중입니다... 조금만 기다려 주세요!"):
             for labels in label_triplets:
                 if len(labels) < 3:
                     continue

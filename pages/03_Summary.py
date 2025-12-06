@@ -14,7 +14,7 @@ def apply_ui():
 
 apply_ui() 
 
-st.title("📸 AI 여행일기 생성")
+st.title("📸 AI 일기 생성")
 # st.write("DEBUG episode_no:", st.session_state.get("episode_no"))
 
 # Upload 페이지에서 선택한 s3 키들을 세션으로 전달

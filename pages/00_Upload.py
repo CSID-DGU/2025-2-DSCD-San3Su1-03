@@ -1,6 +1,7 @@
 # pages/00_Upload.py
 import sys, os, uuid
 import streamlit as st
+import pandas as pd
 from PIL import Image, ExifTags, ImageOps
 from io import BytesIO
 from datetime import datetime
@@ -183,11 +184,16 @@ def extract_gps_datetime(img: Image.Image):
 if files and upload_ready:
     uploaded_keys = []
     meta_pack = []   # 지도 페이지에서 바로 쓰려는 간단 메타: [{key, lon, lat, taken_at}, ...]
+    with_location = []    # 위치 정보 있는 파일명
+    without_location = [] # 위치 정보 없는 파일명
+    failed_files = []     # 업로드 자체가 실패한 파일명
 
     progress = st.progress(0.0, text="업로드 준비 중...")
     total = len(files)
 
     for idx, file in enumerate(files, start=1):
+        progress.progress(idx/total, text=f"업로드 중... ({idx}/{total})")
+
         try:
             # 1) 한 번만 파일 바이트를 뽑아둔다 (Streamlit UploadedFile은 .read() 후 포인터 이동)
             file_bytes = file.read()
@@ -196,7 +202,6 @@ if files and upload_ready:
             img_raw = Image.open(BytesIO(file_bytes))
             lon, lat, taken_at = extract_gps_datetime(img_raw)  # ✅ EXIF 있는 상태에서 추출
             img_raw = ImageOps.exif_transpose(img_raw)
-            st.write("GPS RAW:", {ExifTags.GPSTAGS.get(k,k):v for k,v in (_get_exif(img_raw).get("GPSInfo") or {}).items()})
 
             # 3) 저장용으로만 RGB 변환해서 재인코딩
             img = img_raw.convert("RGB")
@@ -221,24 +226,18 @@ if files and upload_ready:
                 size=size,
                 taken_at=taken_at, lon=lon, lat=lat
             )
-            # ✅ 역지오코딩 캐시 저장 (좌표가 있을 때만)
+            # ✅ 역지오코딩 캐시 저장 (좌표가 있을 때만, 조용히 처리)
             if lat is not None and lon is not None:
                 try:
-                    # 1) 좌표 캐시 먼저 확인 (라운드6+provider)
                     cached = get_address_cache_by_coord(lat, lon, provider="kakao")
                     if cached and cached.get("data"):
-                        # 좌표 단위 캐시를 photo_id에도 연결
                         upsert_address_cache(photo_id, lat, lon, "kakao", cached["data"])
                     else:
-                        # 2) 카카오 API 호출
                         info = kakao_reverse(lat, lon)
                         if info:
                             upsert_address_cache(photo_id, lat, lon, info.get("provider","kakao"), info)
-                            st.caption(f"주소 캐시 저장: {info.get('address_name') or info.get('road_address')}")
-                        else:
-                            st.caption("주소 조회 실패(카카오 응답 없음)")
-                except Exception as ge:
-                    st.warning(f"주소 캐시 중 오류: {ge!r}")
+                except Exception:
+                    pass  # 주소 캐시 실패는 조용히 넘김
 
             # g) 세션용 메타도 누적
             meta_pack.append({
@@ -248,14 +247,40 @@ if files and upload_ready:
                 "preview_url": getattr(storage, "url", lambda k: None)(key)
             })
 
-            # h) per-file 알림은 얌전하게
-            st.success(f"[{file.name}] 업로드/DB 기록 완료 (photo_id={photo_id})")
-            st.write("DEBUG EXIF:", {"lon": lon, "lat": lat, "taken_at": taken_at})
+            # 위치 정보 유무에 따라 분류
+            if lat is not None and lon is not None:
+                with_location.append(file.name)
+            else:
+                without_location.append(file.name)
 
         except Exception as e:
-            st.error(f"[{file.name}] 처리 실패: {e!r}")
+            failed_files.append((file.name, str(e)))
 
-        progress.progress(idx/total, text=f"업로드 진행 중... ({idx}/{total})")
+    # 업로드 완료 후 결과 표시
+    progress.empty()  # 프로그레스 바 제거
+
+    # 업로드 자체가 실패한 파일
+    if failed_files:
+        for fname, err in failed_files:
+            st.error(f"❌ {fname} - 업로드 실패")
+
+    # 위치 정보 없는 파일
+    if without_location:
+        for fname in without_location:
+            st.warning(f"📍 {fname} - 위치 정보가 없어 지도에 표시되지 않습니다.")
+
+    # 위치 정보 있는 파일 (지도 시각화 가능)
+    if with_location:
+        for fname in with_location:
+            st.success(f"✅ {fname} - 업로드 완료 (지도 시각화 가능)")
+
+    # 요약 메시지
+    total_uploaded = len(with_location) + len(without_location)
+    if total_uploaded > 0:
+        st.divider()
+        st.markdown(f"**총 {total_uploaded}장 중 {len(with_location)}장은 지도에 표시됩니다.**")
+        if with_location:
+            st.caption("🗺️ 지도에 표시 가능한 사진은 **이동경로 시각화** 메뉴에서 확인할 수 있어요.")
 
     # ---------- 7) 루프 종료 후 세션에 한 번만 반영 ----------
     if uploaded_keys:
@@ -265,15 +290,32 @@ if files and upload_ready:
 
         episode_no = int(imgs_id)
         st.session_state["episode_no"] = episode_no   # 🔹 여기서만 저장
-        
+
         title = episode_title.strip() or None
         upsert_episode_for_upload(user_id, episode_no, title=title)
         refresh_episode_meta(user_id, episode_no)
 
-        st.info(
-            f"✅ 총 {len(uploaded_keys)}개의 이미지 업로드 완료!\n"
-            f"👉 이제 좌측 메뉴에서 기능들을 이용하실 수 있습니다."
-        )
+        # ✅ CSV 파일로도 저장 (지도 실험 페이지용)
+        csv_dir = os.path.join(os.path.dirname(__file__), "..", "data", "route_csv")
+        os.makedirs(csv_dir, exist_ok=True)
+        csv_path = os.path.join(csv_dir, f"episode_{user_id}_{episode_no}.csv")
+
+        csv_rows = []
+        for m in meta_pack:
+            csv_rows.append({
+                "key": m["key"],
+                "lat": m["lat"],
+                "lon": m["lon"],
+                "taken_at": m["taken_at"],
+                "preview_url": m["preview_url"],
+            })
+
+        if csv_rows:
+            df_csv = pd.DataFrame(csv_rows)
+            df_csv.to_csv(csv_path, index=False, encoding="utf-8-sig")
+            st.session_state["route_csv_path"] = csv_path
+
+        st.info("👉 이제 좌측 메뉴에서 기능들을 이용하실 수 있습니다.")
 
 
 # ---------- 8) 현재 세션에 저장된 에피소드 정보 보여주기 ----------
@@ -298,11 +340,11 @@ else:
 
 
 # ---------- 9) 새로운 에피소드 올리기 (초기화 버튼) ----------
+st.divider()
 if st.button("🆕 새로운 에피소드 올리기"):
     # 이전 에피소드 관련 상태 싹 정리
     st.session_state["selected_image_keys"] = []
     st.session_state["selected_image_meta"] = []
-    # st.session_state["upload_files"] = None   
 
     # 🔥 파일 업로더 초기화 방법 → 업로드 위젯의 key를 교체
     st.session_state["upload_files_key"] = str(uuid.uuid4())
@@ -312,7 +354,3 @@ if st.button("🆕 새로운 에피소드 올리기"):
 
     st.success("새로운 에피소드 업로드를 시작할 준비가 되었습니다.")
     st.rerun()
-
-
-saved_group = st.session_state.get("episode_no", None)
-st.write("DEBUG episode_no:", saved_group)

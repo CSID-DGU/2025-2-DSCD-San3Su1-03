@@ -124,12 +124,12 @@ def render_sidebar():
         try:
             st.page_link("pages/01_MyPage.py", label="마이페이지", icon="👤")
             st.page_link("pages/02_Route.py", label="이동경로 시각화", icon="🗺️")
-            st.page_link("pages/03_Summary.py", label="AI 여행일기 생성", icon="📝")
+            st.page_link("pages/03_Summary.py", label="AI 일기 생성", icon="📝")
             st.page_link("pages/04_NextRec.py", label="장소 추천", icon="✨")
         except Exception:
             if st.button("👤 My Page"): st.switch_page("pages/01_MyPage.py")
             if st.button("🗺️ Route Visualization"): st.switch_page("pages/02_Route.py")
-            if st.button("📝 AI Summary"): st.switch_page("pages/03_Summary.py")
+            if st.button("📝 AI 일기 생성"): st.switch_page("pages/03_Summary.py")
             if st.button("✨ Next Recommendation"): st.switch_page("pages/04_NextRec.py")
 
         st.divider()
