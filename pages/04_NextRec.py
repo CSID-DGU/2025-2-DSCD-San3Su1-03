@@ -544,7 +544,7 @@ if st.button("장소 추천 확인하기"):
             st.info("업로드된 사진들에 맞는 추천 장소를 찾지 못했어요.")
         else:
             if strong_sample:
-                st.subheader("🔥 강력 추천 (라벨 3개 매치)")
+                st.subheader("✨ 여기를 가보시면 어떨까요?")
                 st.caption(f"총 {strong_total}개 중 랜덤 {len(strong_sample)}개를 보여줍니다.")
                 for pid in strong_sample:
                     if pid in place_info:
