@@ -184,7 +184,7 @@ with left:
 with right:
     st.subheader("이동 경로 지도", divider="gray")
 
-    # 지도 중심 계산 (데이터 기반)
+    # 지도 경계 계산 (데이터 기반)
     min_lat = float(df_show["lat"].min())
     max_lat = float(df_show["lat"].max())
     min_lon = float(df_show["lon"].min())
@@ -194,11 +194,13 @@ with right:
     # folium 지도 생성
     m = folium.Map(
         location=center,
-        zoom_start=13,
         tiles="OpenStreetMap",
         control_scale=True,
         max_zoom=18,
     )
+
+    # 모든 마커가 보이도록 경계에 맞춰 자동 줌 조정
+    m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
 
     # 클러스터링
     cluster = MarkerCluster(

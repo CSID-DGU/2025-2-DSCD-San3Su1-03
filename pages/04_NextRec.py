@@ -485,23 +485,61 @@ if st.button("장소 추천 확인하기"):
         strong_sample = sample_ids(strong_ids, 3)
         medium_sample = sample_ids(medium_ids, 3)
 
-        # 4) place 테이블에서 name, address 조회
+        # 4) place 테이블에서 name, address, image_urls 조회
         query_ids = strong_sample + [pid for pid in medium_sample if pid not in strong_sample]
-        place_info: dict[int, tuple[str, str]] = {}
+        place_info: dict[int, tuple[str, str, str]] = {}  # (name, address, image_urls)
 
         if query_ids:
             cur.execute(
                 """
-                SELECT place_id, name, address
+                SELECT place_id, name, address, image_urls
                 FROM place
                 WHERE place_id IN %s
                 """,
                 (tuple(query_ids),),
             )
-            for pid, name, address in cur.fetchall():
-                place_info[pid] = (name, address)
+            for pid, name, address, image_urls in cur.fetchall():
+                place_info[pid] = (name, address, image_urls)
 
         # 5) 화면 출력
+        def render_place_card(name: str, addr: str, image_urls: str | None):
+            """장소 카드를 이미지와 함께 렌더링 (이미지 없으면 문구만)"""
+
+            # 1) image_urls에서 랜덤하게 URL 하나 뽑기
+            selected_url = None
+            if image_urls:
+                urls = [u.strip() for u in image_urls.split(",") if u.strip()]
+                if urls:
+                    selected_url = random.choice(urls)
+
+            # 2) 진짜 이미지인지 미리 체크
+            img_bytes = None
+            if selected_url:
+                try:
+                    resp = requests.get(selected_url, timeout=3)
+                    content_type = resp.headers.get("Content-Type", "")
+                    # 응답이 정상이고, Content-Type 이 image/* 인 경우만 이미지로 인정
+                    if resp.ok and content_type.startswith("image"):
+                        img_bytes = resp.content
+                except Exception:
+                    img_bytes = None
+
+            # 3) 화면 렌더링
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                if img_bytes is not None:
+                    # URL 대신 다운로드한 바이너리를 넘겨줌 → 깨진 이미지 아이콘 안 뜸
+                    st.image(img_bytes, use_container_width=True)
+                else:
+                    st.info("🖼️ 이미지를 찾지 못했습니다")
+
+            with col2:
+                st.markdown(f"### {name}")
+                st.markdown(f"📍 {addr}")
+
+            st.divider()
+
+
         if not strong_sample and not medium_sample:
             st.info("업로드된 사진들에 맞는 추천 장소를 찾지 못했어요.")
         else:
@@ -510,28 +548,20 @@ if st.button("장소 추천 확인하기"):
                 st.caption(f"총 {strong_total}개 중 랜덤 {len(strong_sample)}개를 보여줍니다.")
                 for pid in strong_sample:
                     if pid in place_info:
-                        name, addr = place_info[pid]
-                        st.markdown(
-                            f"- **{name}**  \n"
-                            f"  📍 {addr}  \n"
-                            f"  *(place_id={pid})*"
-                        )
+                        name, addr, image_urls = place_info[pid]
+                        render_place_card(name, addr, image_urls)
 
                 # 강력추천이 있는 경우는 여기서 끝 → medium 출력하지 않음
                 st.stop()
-            
+
             # ✨ 강력추천이 없을 때만 → 중간추천 출력
             if medium_sample:
-                st.subheader("✨ 중간 추천 (라벨 2개 매치)")
+                st.subheader("✨ 여기를 가보시면 어떨까요?")
                 st.caption(f"총 {medium_total}개 중 랜덤 {len(medium_sample)}개를 보여줍니다.")
                 for pid in medium_sample:
                     if pid in place_info:
-                        name, addr = place_info[pid]
-                        st.markdown(
-                            f"- **{name}**  \n"
-                            f"  📍 {addr}  \n"
-                            f"  *(place_id={pid})*"
-                        )
+                        name, addr, image_urls = place_info[pid]
+                        render_place_card(name, addr, image_urls)
 
     except Exception as e:
         conn.rollback()

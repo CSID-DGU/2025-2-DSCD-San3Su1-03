@@ -176,7 +176,6 @@ with right:
         # 이전 에피소드 관련 상태 싹 정리
         st.session_state["selected_image_keys"] = []
         st.session_state["selected_image_meta"] = []
-        st.session_state["upload_files"] = None
         st.session_state["episode_title"] = ""
         st.success("새로운 에피소드 업로드를 시작할 준비가 되었습니다.")
         st.switch_page("pages/00_Upload.py")
